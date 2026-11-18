@@ -1,159 +1,229 @@
-# Backend Quality Gates
 
-## Purpose and use
+# Enterprise Backend Quality Gates
 
-Apply the relevant gates to significant Laravel backend features, architecture and security reviews, code reviews, and production-readiness assessments. Tailor depth to risk: authentication, authorization, financial or employee data, destructive operations, and externally exposed endpoints require stricter review. A checklist is a verification aid, not proof by itself.
+## Purpose
 
-For each applicable item, record one of: **Pass** (verified), **Fail** (known defect), **Not applicable** (with reason), or **Not verified** (evidence unavailable). Do not mark an item as passed based only on code generation or assumption.
+Use these gates for significant features, architecture reviews, security reviews, code reviews, and production-readiness assessments.
 
-## 1. Requirements and architecture gate
+Adjust review depth according to actual risk.
 
-- [ ] Business outcome, actors, acceptance criteria, and non-functional requirements are understood.
-- [ ] Confirmed requirements are distinguished from assumptions and unresolved policy decisions.
-- [ ] Domain ownership and module boundaries are clear.
-- [ ] Dependencies are intentional; no circular module coupling is introduced.
-- [ ] The design fits the existing Laravel version, project conventions, and installed dependencies.
-- [ ] Abstractions have a concrete benefit; no unnecessary repository/service/interface/DTO layers.
-- [ ] Failure modes, concurrency, retries, and side effects are considered.
-- [ ] Backward compatibility and rollout/rollback implications are understood.
-- [ ] Frontend implementation remains out of scope.
+For each applicable check, record:
 
-## 2. Database and persistence gate
+- PASS: Verified with evidence.
+- FAIL: A known defect exists.
+- NOT APPLICABLE: The check does not apply, with reason.
+- NOT VERIFIED: Evidence is unavailable.
 
-- [ ] Tables/entities, keys, relationships, nullability, and deletion behavior reflect business invariants.
-- [ ] Foreign keys and unique constraints prevent invalid or duplicate data where supported.
-- [ ] Data types, precision, timezone semantics, and JSON usage are appropriate.
-- [ ] Indexes support actual filters, joins, sort orders, and aggregate query patterns.
-- [ ] Transactions cover multi-write operations that must be atomic.
-- [ ] Concurrent updates and duplicate submissions are handled where relevant.
-- [ ] Migrations are compatible with existing data and production deployment constraints.
-- [ ] Large-table locks, backfills, defaults, and expand/contract rollout are considered.
-- [ ] No destructive migration or database command is run without explicit authorization.
-- [ ] Seeders/factories do not introduce unsafe production behavior.
+Never mark a check as PASS based only on generated code or assumptions.
 
-## 3. Security and authorization gate
+## 1. Requirements and Architecture
 
-- [ ] Authentication is required where appropriate and uses the project's approved mechanism.
-- [ ] Authorization is enforced server-side for every relevant read and write.
-- [ ] Resource ownership and organization/project/team scope are checked.
-- [ ] IDOR and cross-user/cross-project/cross-team access are tested.
-- [ ] Roles are not treated as a substitute for resource-level authorization.
-- [ ] Administrative privileges do not silently grant unrestricted business-data access.
-- [ ] Client-supplied actor, owner, role, permission, and scope identifiers are not trusted.
-- [ ] Input is validated and writable fields are explicitly controlled.
-- [ ] Sensitive attributes, relationships, and internal implementation details are not exposed.
-- [ ] File access, exports, nested resources, bulk operations, and background jobs enforce authorization.
-- [ ] Rate limits protect sensitive and abuse-prone operations.
-- [ ] Secrets are not hardcoded, committed, logged, or returned.
-- [ ] Webhook signatures and replay/deduplication protections are verified where applicable.
-- [ ] Error responses do not leak secrets, stack traces, or sensitive internals.
+- [ ] Business outcome is understood.
+- [ ] Acceptance criteria are defined.
+- [ ] Confirmed requirements are separated from assumptions.
+- [ ] Domain boundaries are clear.
+- [ ] Dependencies are intentional.
+- [ ] Architecture matches installed Laravel and PHP versions.
+- [ ] No unnecessary abstractions are introduced.
+- [ ] Failure and recovery behavior is considered.
+- [ ] Backward compatibility is reviewed.
+- [ ] Scope is respected.
+- [ ] Complexity is proportional to the task.
 
-## 4. API contract gate
+## 2. Database and Persistence
 
-- [ ] Each endpoint has a clear purpose, HTTP method, URI, and authentication requirement.
-- [ ] Authorization behavior and resource scope are explicit.
-- [ ] Request parameters and validation rules are documented and tested.
-- [ ] Response fields are explicit and do not expose raw model internals accidentally.
-- [ ] HTTP status codes and error structure are consistent with project conventions.
-- [ ] Pagination is applied to collections and page sizes are bounded.
-- [ ] Filtering, sorting, and search fields are whitelisted and bounded.
-- [ ] Rate limiting and idempotency behavior are defined where needed.
-- [ ] API changes are backward-compatible or an approved breaking change is documented.
-- [ ] OpenAPI or other API documentation matches the implementation when used.
+- [ ] Relationships reflect business rules.
+- [ ] Foreign keys are appropriate.
+- [ ] Unique constraints prevent invalid duplicates.
+- [ ] Data types and precision are correct.
+- [ ] Nullability is deliberate.
+- [ ] Deletion behavior is explicit.
+- [ ] Indexes support expected queries.
+- [ ] Transactions cover atomic operations.
+- [ ] Concurrent updates are handled where necessary.
+- [ ] N+1 and unbounded queries are prevented.
+- [ ] Migrations preserve existing data.
+- [ ] Large-table migration impact is considered.
+- [ ] Rollback or forward-fix strategy is documented.
+- [ ] Destructive database commands require approval.
 
-## 5. Business logic and workflow gate
+## 3. Security and Authorization
 
-- [ ] Business invariants are centralized and cannot be bypassed through alternate entry points.
-- [ ] Valid states and transitions are explicit.
-- [ ] Transition permissions and required data are enforced.
-- [ ] Invalid transitions are rejected with predictable errors.
-- [ ] Actor, timestamp, and relevant before/after state are recorded.
-- [ ] Side effects, notifications, and audit events are intentional.
-- [ ] Rejection, cancellation, reopening, blocking, and rollback/compensation paths are considered.
-- [ ] Critical calculations and metric definitions have one authoritative implementation.
-- [ ] Concurrency and duplicate-request behavior are defined.
+- [ ] Authentication is appropriate.
+- [ ] Authorization is enforced server-side.
+- [ ] Resource ownership is checked.
+- [ ] IDOR risks are tested.
+- [ ] Cross-user access is tested.
+- [ ] Cross-project and cross-team access are tested where relevant.
+- [ ] Client-supplied identity and ownership fields are not trusted.
+- [ ] Writable fields are explicitly controlled.
+- [ ] Sensitive data is not exposed.
+- [ ] Files and exports are protected.
+- [ ] Background jobs respect authorization requirements.
+- [ ] Rate limits are appropriate.
+- [ ] Secrets are protected.
+- [ ] Webhook security is verified where applicable.
+- [ ] Error responses do not leak internals.
+- [ ] Relevant security guidelines are applied.
 
-## 6. Performance and scalability gate
+## 4. Multi-Tenancy
 
-- [ ] Queries have been inspected for avoidable N+1 behavior.
-- [ ] Eager loading and selected columns are appropriate.
-- [ ] Collection endpoints and large data operations are bounded/paginated/chunked.
-- [ ] Aggregate calculations are performed efficiently and consistently.
-- [ ] Indexes are justified by query patterns or measured plans.
-- [ ] API payload size and serialization cost are appropriate.
-- [ ] Slow work is queued when appropriate, without moving consistency-critical work out of the transaction incorrectly.
-- [ ] Cache use has a documented key, invalidation strategy, staleness tolerance, and fallback.
-- [ ] Performance claims are supported by measurements or clearly labeled as unverified.
+When applicable:
 
-## 7. Queues, events, notifications, and schedules gate
+- [ ] Tenancy strategy is documented.
+- [ ] Tenant resolution is trusted.
+- [ ] Tenant membership is verified.
+- [ ] Tenant scope is enforced for reads and writes.
+- [ ] Cross-tenant relationships are prevented.
+- [ ] Cache keys are tenant-aware.
+- [ ] Jobs restore and clear tenant context.
+- [ ] Files are tenant-protected.
+- [ ] Search and reporting are tenant-scoped.
+- [ ] Exports are tenant-scoped.
+- [ ] Administrative cross-tenant access is restricted.
+- [ ] Cross-tenant denial tests exist.
 
-- [ ] Jobs are idempotent or have a deliberate duplicate-processing strategy.
-- [ ] Timeouts, retries, backoff, rate limits, and failure behavior are configured appropriately.
-- [ ] Permanent failures are observable and have a recovery/replay path where required.
-- [ ] Dispatch timing respects transaction commit when necessary.
-- [ ] Scheduled tasks handle overlap, timezone, and missed runs deliberately.
-- [ ] Notification recipients are authorized and preferences are respected.
-- [ ] Duplicate notifications and self-notifications are handled according to policy.
-- [ ] Tests cover dispatch, handling, failure, and relevant side effects.
+## 5. API Contracts
 
-## 8. File and external integration gate
+- [ ] Endpoint purpose and HTTP semantics are clear.
+- [ ] Authentication is defined.
+- [ ] Authorization is explicit.
+- [ ] Input validation is complete.
+- [ ] Response fields are controlled.
+- [ ] Status codes are appropriate.
+- [ ] Error structures are consistent.
+- [ ] Pagination is applied where required.
+- [ ] Page sizes are bounded.
+- [ ] Filters and sorting are whitelisted.
+- [ ] Search complexity is bounded.
+- [ ] Rate limits are defined.
+- [ ] Idempotency is handled where necessary.
+- [ ] API documentation matches actual behavior.
 
-- [ ] Upload size and content/type are validated.
-- [ ] Storage names are server-generated and path traversal is prevented.
-- [ ] Private files are served only through authorized access or appropriately scoped temporary URLs.
-- [ ] File metadata and parent-record authorization are enforced.
-- [ ] External credentials are stored securely and scoped minimally.
-- [ ] External calls have timeouts and bounded retry behavior.
-- [ ] Idempotency, provider rate limits, and partial failure are handled.
-- [ ] Webhook signatures, replay windows, duplicate events, and out-of-order events are considered.
-- [ ] Optional integrations cannot unnecessarily break core business operations.
-- [ ] Integration status and failure details are observable without leaking secrets.
+## 6. Business Logic and Workflows
 
-## 9. Audit and observability gate
+- [ ] Business invariants are centralized.
+- [ ] Valid states are explicit.
+- [ ] Valid transitions are defined.
+- [ ] Transition permissions are enforced.
+- [ ] Invalid transitions are rejected.
+- [ ] Actor and timestamp are recorded.
+- [ ] Side effects are intentional.
+- [ ] Rejection and reopening paths are defined.
+- [ ] Failure and compensation behavior is considered.
+- [ ] Duplicate submissions are handled.
+- [ ] Concurrent updates are addressed.
+- [ ] Critical calculations have an authoritative definition.
 
-- [ ] Important business changes capture actor, action, entity, and timestamp.
-- [ ] Before/after values or a safe change summary are recorded when required.
-- [ ] Audit history is protected from unauthorized mutation and access.
-- [ ] Secrets and unnecessary personal data are excluded from logs and audit payloads.
-- [ ] Business audit, application logs, security events, integration logs, and queue failures are distinguishable.
-- [ ] Logs include sufficient safe context/correlation identifiers for diagnosis.
-- [ ] Retention and access rules are considered for sensitive records.
+## 7. Queues and Integrations
 
-## 10. Testing and code quality gate
+- [ ] Jobs are idempotent where required.
+- [ ] Retries are bounded.
+- [ ] Timeouts are appropriate.
+- [ ] Permanent failures are observable.
+- [ ] Recovery and replay are considered.
+- [ ] Dispatch timing respects transaction boundaries.
+- [ ] Duplicate events are handled.
+- [ ] Webhook signatures are verified.
+- [ ] Replay and out-of-order events are considered.
+- [ ] External calls have timeouts.
+- [ ] Provider failures are handled.
+- [ ] Credentials are scoped and protected.
 
-- [ ] Tests cover successful behavior and expected failures.
-- [ ] Authorization denials and cross-scope access are explicitly tested.
-- [ ] Validation, edge cases, and invalid state transitions are tested.
-- [ ] Database constraints and transactional behavior are tested where relevant.
-- [ ] Duplicate requests and concurrency are tested where risk warrants.
-- [ ] Queue, notification, event, webhook, and integration behavior is tested where relevant.
-- [ ] Regression tests cover affected existing behavior.
-- [ ] Tests follow the existing Pest/PHPUnit conventions.
-- [ ] Pint, PHPStan/Larastan, and other installed quality tools are run when relevant.
-- [ ] Actual commands, environment limitations, failures, and skipped tests are reported accurately.
-- [ ] No dependency was added without compatibility and necessity review.
+## 8. Files and Storage
 
-## 11. Production-readiness gate
+- [ ] Upload content and size are validated.
+- [ ] Storage names are server-generated.
+- [ ] Path traversal is prevented.
+- [ ] Private file access is authorized.
+- [ ] File ownership is verified.
+- [ ] Temporary URLs are appropriately scoped.
+- [ ] Retention and deletion behavior is defined.
+- [ ] Tenant isolation is enforced where applicable.
 
-- [ ] Configuration and secrets are supplied through approved environment/secret management.
-- [ ] Required migrations and deployment order are documented.
-- [ ] Queue workers, scheduler, storage, and external dependencies are accounted for operationally.
-- [ ] Health, error, queue-failure, and integration monitoring needs are identified.
-- [ ] Backup, restore, retention, and recovery implications are understood for data changes.
-- [ ] Rollback or forward-fix strategy is documented for risky releases.
-- [ ] Rate limits, timeouts, and resource limits are appropriate.
-- [ ] API and operational documentation reflect actual behavior.
-- [ ] Remaining risks and unverified assumptions are visible to the release owner.
+## 9. Performance and Reliability
 
-## 12. Review outcome
+- [ ] Queries have been reviewed.
+- [ ] N+1 behavior is addressed.
+- [ ] Collection operations are bounded.
+- [ ] Pagination or chunking is used appropriately.
+- [ ] Indexes are justified.
+- [ ] Payload sizes are reasonable.
+- [ ] Expensive work is queued where appropriate.
+- [ ] Cache invalidation is defined.
+- [ ] Locking and contention risks are considered.
+- [ ] Performance claims have evidence or are marked unverified.
 
-For each significant change, provide a concise record:
+## 10. Testing and Code Quality
 
-- **Scope reviewed:** modules, endpoints, migrations, and workflows.
-- **Gate status:** Pass / Fail / Not verified, with material exceptions.
-- **Evidence:** tests, commands, query plans, code paths, or configuration inspected.
-- **Findings:** severity, impact, and affected behavior.
-- **Required fixes:** concrete actions and acceptance criteria.
-- **Residual risks:** accepted risks or items requiring product/operations decisions.
+- [ ] Tests cover successful behavior.
+- [ ] Expected failures are tested.
+- [ ] Authorization denials are tested.
+- [ ] Validation failures are tested.
+- [ ] State transitions are tested.
+- [ ] Database constraints are tested.
+- [ ] Concurrency is tested where warranted.
+- [ ] Integration failures are tested where relevant.
+- [ ] Regression tests are added.
+- [ ] Existing testing conventions are followed.
+- [ ] Installed quality tools are executed where relevant.
+- [ ] Skipped tests are reported.
+- [ ] No dependency is added without justification.
 
-Do not label a feature "production-ready" solely because all checklist boxes were checked. Production readiness also depends on the actual deployment environment, operational controls, data volume, threat model, and release process.
+## 11. Production Readiness
+
+- [ ] Configuration is production-appropriate.
+- [ ] Secrets use approved management.
+- [ ] APP_DEBUG is disabled in production.
+- [ ] Migrations and deployment order are documented.
+- [ ] Queue workers are accounted for.
+- [ ] Scheduler behavior is documented.
+- [ ] Storage permissions are reviewed.
+- [ ] Health monitoring requirements are identified.
+- [ ] Error and queue-failure monitoring is considered.
+- [ ] Backup and restore implications are understood.
+- [ ] Recovery strategy is documented.
+- [ ] Rate limits and timeouts are appropriate.
+- [ ] Remaining risks are visible.
+- [ ] Production operations have appropriate approval.
+
+## 12. Review Report
+
+For significant changes, produce:
+
+### Scope
+Modules, endpoints, migrations, workflows, and infrastructure reviewed.
+
+### Gate Summary
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Architecture | PASS / FAIL / NOT VERIFIED | Evidence |
+| Database | PASS / FAIL / NOT VERIFIED | Evidence |
+| Security | PASS / FAIL / NOT VERIFIED | Evidence |
+| Authorization | PASS / FAIL / NOT VERIFIED | Evidence |
+| Multi-tenancy | PASS / FAIL / N/A | Evidence |
+| Testing | PASS / FAIL / NOT VERIFIED | Evidence |
+| Production | PASS / FAIL / NOT VERIFIED | Evidence |
+
+### Findings
+
+For each finding:
+
+- Severity.
+- Affected component.
+- Description.
+- Business impact.
+- Evidence.
+- Required correction.
+- Acceptance criteria.
+
+### Residual Risks
+
+Document accepted risks, missing evidence, environmental limitations, and decisions requiring human approval.
+
+## Final Rule
+
+Passing a checklist does not automatically prove production readiness.
+
+Production readiness depends on the actual application, dependencies, data volume, deployment topology, threat model, infrastructure, monitoring, backup, and operational processes.
