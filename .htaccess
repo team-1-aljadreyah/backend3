@@ -1,0 +1,40 @@
+# Defense-in-depth for cPanel when project root lives at /home/<user>/followapi.ama8.uk/
+# Best practice: still set cPanel Domain Document Root to followapi.ama8.uk/public.
+# If Document Root points directly to followapi.ama8.uk/, this file blocks all
+# sensitive files/directories with 403 Forbidden and safely routes traffic to public/.
+
+<IfModule mod_negotiation.c>
+    Options -MultiViews -Indexes
+</IfModule>
+
+<FilesMatch "^(\.env.*|\.git.*|\.htaccess|\.htpasswd|\.editorconfig|artisan|composer\.(json|lock)|README\.md|phpunit\.xml|.*\.(sql|sqlite|log|bak))$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Forward Authorization header for Sanctum Bearer tokens
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    <IfModule mod_setenvif.c>
+        SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+    </IfModule>
+
+    # Allow AutoSSL validation under /.well-known/
+    RewriteRule ^\.well-known/ - [L]
+
+    # Block direct web access to private Laravel directories and root files
+    RewriteRule ^(app|bootstrap|config|database|lang|resources|routes|storage|tests|vendor)(/.*)?$ - [F,L]
+    RewriteRule ^(\.env.*|\.git.*|\.htaccess|\.editorconfig|artisan|composer\.(json|lock)|README\.md)$ - [F,L]
+
+    # Internally route all public requests into public/
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
