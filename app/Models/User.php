@@ -24,6 +24,8 @@ class User extends Authenticatable
         'phone',
         'role',
         'custom_role',
+        'birth_date',
+        'preferred_locale',
         'title',
         'team_id',
         'active',
@@ -45,6 +47,7 @@ class User extends Authenticatable
             'active' => 'boolean',
             'password' => 'hashed',
             'team_id' => 'integer',
+            'birth_date' => 'date:Y-m-d',
         ];
     }
 

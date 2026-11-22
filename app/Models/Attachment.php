@@ -17,6 +17,7 @@ class Attachment extends Model
         'name',
         'size',
         'mime',
+        'voice',
         'disk_path',
         'uploaded_by',
         'at',
@@ -27,6 +28,7 @@ class Attachment extends Model
         return [
             'owner_id' => 'integer',
             'size' => 'integer',
+            'voice' => 'array',
             'uploaded_by' => 'integer',
             'at' => 'datetime',
         ];

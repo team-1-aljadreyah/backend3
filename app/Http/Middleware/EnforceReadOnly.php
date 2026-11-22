@@ -49,7 +49,8 @@ class EnforceReadOnly
             'api/v1/notifications/preferences',
             'api/v1/chats/*/read',
             'api/v1/announcements/*/seen',
-            'api/v1/me/avatar'
+            'api/v1/me/avatar',
+            'api/v1/me/push-subscriptions'
         );
     }
 }

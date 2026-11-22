@@ -122,7 +122,7 @@ class AccessService
 
     public function canManageBugs(User $user, Project $project): bool
     {
-        return $this->canManageTasks($user, $project);
+        return $this->canManageTasks($user, $project) || $user->role === 'monitor';
     }
 
     public function canSeeReports(User $user): bool
@@ -211,7 +211,7 @@ class AccessService
 
     public function canStartDirect(User $user, User $other): bool
     {
-        return $this->isCeo($user) || ! $this->isCeo($other);
+        return $this->isCeo($user) || ! $this->isCeo($other) || $user->role === 'monitor';
     }
 
     public function canWriteInDirect(User $user, User $other, bool $otherHasWritten): bool
@@ -236,7 +236,137 @@ class AccessService
 
     public function canSeeNote(User $user, MonitorNote $note): bool
     {
-        return $this->isCeo($user) || (int) $note->author_id === (int) $user->id;
+        if ($this->isCeo($user) || (int) $note->author_id === (int) $user->id) {
+            return true;
+        }
+        if ($user->role === 'monitor' && $note->kind === 'request') {
+            return true;
+        }
+        if ($note->relationLoaded('shares')) {
+            return $note->shares->contains('user_id', (int) $user->id);
+        }
+
+        return $note->shares()->where('user_id', $user->id)->exists();
+    }
+
+    public function canTriageRequests(User $user): bool
+    {
+        return $this->isCeo($user) || $user->role === 'monitor';
+    }
+
+    public function canShareNote(User $user, MonitorNote $note): bool
+    {
+        return $note->kind !== 'request' && ($this->isCeo($user) || (int) $note->author_id === (int) $user->id);
+    }
+
+    public function canManageSessions(User $user): bool
+    {
+        return $this->isCeo($user) || $user->role === 'admin';
+    }
+
+    public function canSeeTeam(User $user, \App\Models\Team $team): bool
+    {
+        return $this->isCeo($user)
+            || in_array($user->role, ['monitor', 'pm', 'admin'], true)
+            || ($user->team_id !== null && (int) $user->team_id === (int) $team->id);
+    }
+
+    /**
+     * @param  Collection<int, User>  $activeUsers
+     * @param  Collection<int, Project>  $projects
+     */
+    public function worksForPm(int $pmId, \App\Models\Team $team, Collection $activeUsers, Collection $projects): bool
+    {
+        $teamMemberIds = $activeUsers
+            ->where('team_id', (int) $team->id)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        if ($teamMemberIds === []) {
+            return false;
+        }
+
+        foreach ($projects as $project) {
+            if ((int) $project->pm_id !== $pmId) {
+                continue;
+            }
+            if (array_intersect($teamMemberIds, $project->memberIds()) !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  Collection<int, User>  $activeUsers
+     * @param  Collection<int, Project>  $projects
+     */
+    public function canRateTeam(User $user, \App\Models\Team $team, Collection $activeUsers, Collection $projects): bool
+    {
+        if ($this->isCeo($user) || $user->role === 'monitor') {
+            return true;
+        }
+
+        return $user->role === 'pm' && $this->worksForPm((int) $user->id, $team, $activeUsers, $projects);
+    }
+
+    /**
+     * @param  Collection<int, User>  $activeUsers
+     * @param  Collection<int, Project>  $projects
+     */
+    public function canSeeTeamRatings(User $user, \App\Models\Team $team, Collection $activeUsers, Collection $projects): bool
+    {
+        return $this->isCeo($user)
+            || $this->canRateTeam($user, $team, $activeUsers, $projects)
+            || ($user->role !== 'admin' && $user->team_id !== null && (int) $user->team_id === (int) $team->id);
+    }
+
+    /**
+     * @param  Collection<int, Project>  $projects
+     */
+    public function canRatePerson(User $user, User $person, Collection $projects): bool
+    {
+        if ((int) $user->id === (int) $person->id || ! in_array($person->role, ['pm', 'monitor', 'lead', 'employee'], true)) {
+            return false;
+        }
+        if ($this->isCeo($user) || $user->role === 'monitor') {
+            return true;
+        }
+
+        return $user->role === 'pm' && $projects->contains(
+            fn (Project $p) => (int) $p->pm_id === (int) $user->id && $this->isMember($person, $p)
+        );
+    }
+
+    /**
+     * @param  Collection<int, Project>  $projects
+     */
+    public function canSeePersonRatings(User $user, User $person, Collection $projects): bool
+    {
+        return $this->isCeo($user)
+            || $this->canRatePerson($user, $person, $projects)
+            || (int) $user->id === (int) $person->id;
+    }
+
+    public function canSeeRating(User $user, \App\Models\Rating $rating): bool
+    {
+        return $this->isCeo($user) || ! $rating->private || (int) $rating->rater_id === (int) $user->id;
+    }
+
+    public function canChangeRating(User $user, \App\Models\Rating $rating, ?\Carbon\CarbonInterface $now = null): bool
+    {
+        if ($this->isCeo($user)) {
+            return true;
+        }
+        if ((int) $rating->rater_id !== (int) $user->id) {
+            return false;
+        }
+        $now ??= now('UTC');
+
+        return $rating->created_at !== null
+            && $rating->created_at->copy()->addHours(24)->gt($now);
     }
 
     public function canSendToCeo(User $user, MonitorNote $note): bool

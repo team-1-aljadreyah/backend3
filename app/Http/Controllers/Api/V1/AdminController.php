@@ -37,6 +37,46 @@ class AdminController extends Controller
         return ApiResponse::success((new UserResource($user))->resolve($request));
     }
 
+    public function unlockUser(Request $request, int $id): JsonResponse
+    {
+        $user = $this->admin->unlockUser($request->user(), $id);
+
+        return ApiResponse::success((new AdminUserResource($user))->resolve($request));
+    }
+
+    public function importUsers(Request $request): JsonResponse
+    {
+        $result = $this->admin->importUsers(
+            $request->user(),
+            $request->input('rows'),
+            (bool) $request->input('dry_run', true)
+        );
+
+        return ApiResponse::success($result);
+    }
+
+    public function sessions(Request $request): JsonResponse
+    {
+        return ApiResponse::success($this->admin->sessions($request->user()));
+    }
+
+    public function endSession(Request $request, string $id): JsonResponse
+    {
+        $this->admin->endSession($request->user(), $id);
+
+        return ApiResponse::success(null);
+    }
+
+    public function endUserSessions(Request $request, int $id): JsonResponse
+    {
+        return ApiResponse::success($this->admin->endUserSessions($request->user(), $id));
+    }
+
+    public function securitySummary(Request $request): JsonResponse
+    {
+        return ApiResponse::success($this->admin->securitySummary($request->user()));
+    }
+
     public function teams(Request $request): JsonResponse
     {
         return ApiResponse::success(TeamResource::collection($this->admin->teams())->resolve($request));

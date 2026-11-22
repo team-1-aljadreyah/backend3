@@ -39,4 +39,16 @@ return [
         'webhook_secret' => env('GITHUB_WEBHOOK_SECRET', ''),
     ],
 
+    'vapid' => [
+        'subject' => env('VAPID_SUBJECT', 'mailto:admin@ama8.uk'),
+        'public_key' => env('VAPID_PUBLIC_KEY', ''),
+        'private_key' => env('VAPID_PRIVATE_KEY', ''),
+    ],
+
+    'health' => [
+        'storage_quota_bytes' => (int) env('STORAGE_QUOTA_BYTES', 5 * 1024 * 1024 * 1024),
+        'server_version' => env('APP_VERSION', '2.2.0'),
+        'backup_status_path' => env('BACKUP_STATUS_PATH', ''),
+    ],
+
 ];

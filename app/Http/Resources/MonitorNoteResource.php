@@ -18,6 +18,18 @@ class MonitorNoteResource extends JsonResource
             'label_en' => $this->about_label_en,
         ]);
 
+        $viewer = $request->user();
+        $canSeeForwardNote = $viewer !== null && ($viewer->isCeo() || $viewer->role === 'monitor');
+
+        $shares = $this->relationLoaded('shares') ? $this->shares : $this->shares()->get();
+        $sharedWith = $shares->map(fn ($s) => ApiResponse::clean([
+            'id' => (int) $s->user_id,
+            'label' => $s->label,
+            'label_en' => $s->label_en,
+            'at' => BaghdadTime::iso($s->shared_at),
+            'seen_at' => BaghdadTime::iso($s->seen_at),
+        ]))->values()->all();
+
         return ApiResponse::clean([
             'id' => (int) $this->id,
             'kind' => $this->kind,
@@ -34,6 +46,12 @@ class MonitorNoteResource extends JsonResource
             'ceo_reply' => $this->ceo_reply,
             'replied_at' => BaghdadTime::iso($this->replied_at),
             'facts' => $this->facts,
+            'triage' => $this->triage,
+            'forward_note' => $canSeeForwardNote ? $this->forward_note : null,
+            'monitor_reply' => $this->monitor_reply,
+            'triaged_by' => $this->triaged_by !== null ? (int) $this->triaged_by : null,
+            'triaged_at' => BaghdadTime::iso($this->triaged_at),
+            'shared_with' => $sharedWith !== [] ? $sharedWith : null,
         ]);
     }
 }

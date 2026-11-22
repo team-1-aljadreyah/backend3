@@ -21,6 +21,7 @@ class NotificationResource extends JsonResource
             'announcement_id' => $this->announcement_id !== null ? (int) $this->announcement_id : null,
             'bug_id' => $this->bug_id !== null ? (int) $this->bug_id : null,
             'chat_key' => $this->chat_key,
+            'team_id' => $this->team_id !== null ? (int) $this->team_id : null,
             'data' => (object) ($this->data ?? []),
             'at' => BaghdadTime::iso($this->at),
             'read' => (bool) $this->read,

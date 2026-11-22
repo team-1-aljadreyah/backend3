@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class MonitorNote extends Model
 {
@@ -27,6 +28,11 @@ class MonitorNote extends Model
         'ceo_reply',
         'replied_at',
         'facts',
+        'triage',
+        'forward_note',
+        'monitor_reply',
+        'triaged_by',
+        'triaged_at',
     ];
 
     protected function casts(): array
@@ -39,11 +45,18 @@ class MonitorNote extends Model
             'sent_at' => 'datetime',
             'replied_at' => 'datetime',
             'facts' => 'array',
+            'triaged_by' => 'integer',
+            'triaged_at' => 'datetime',
         ];
     }
 
     public function author(): BelongsTo
     {
         return $this->belongsTo(User::class, 'author_id');
+    }
+
+    public function shares(): HasMany
+    {
+        return $this->hasMany(MonitorNoteShare::class, 'note_id')->orderBy('id');
     }
 }

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Exceptions\ApiException;
 use App\Models\Bug;
 use App\Models\MonitorNote;
+use App\Models\MonitorNoteShare;
 use App\Models\Project;
 use App\Models\Task;
 use App\Models\Team;
@@ -38,9 +39,15 @@ class MonitoringService
      */
     public function notes(User $user): Collection
     {
-        $query = MonitorNote::query();
+        $query = MonitorNote::query()->with('shares');
         if (! $user->isCeo()) {
-            $query->where('author_id', $user->id);
+            $query->where(function ($q) use ($user) {
+                $q->where('author_id', $user->id);
+                if ($user->role === 'monitor') {
+                    $q->orWhere('kind', 'request');
+                }
+                $q->orWhereHas('shares', fn ($s) => $s->where('user_id', $user->id));
+            });
         }
 
         return $query
@@ -139,9 +146,28 @@ class MonitoringService
             ? $this->buildFacts($about, $input['period'])
             : null;
 
-        $sendNow = ! empty($input['send']) || $isRequest;
+        $shareIds = [];
+        if (! $isRequest && ! empty($input['share_ids'])) {
+            $shareIds = $this->validateShareIds((array) $input['share_ids']);
+        }
 
-        return DB::transaction(function () use ($user, $kind, $title, $body, $about, $input, $subject, $people, $facts, $sendNow) {
+        $activeMonitorRecipients = $isRequest
+            ? User::query()
+                ->where('active', true)
+                ->where('role', 'monitor')
+                ->where('id', '!=', $user->id)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->all()
+            : [];
+
+        $straightToCeo = ! $isRequest
+            ? ! empty($input['send'])
+            : ($user->role === 'monitor' || $activeMonitorRecipients === []);
+
+        $triage = ($isRequest && ! $straightToCeo) ? 'pending' : null;
+
+        return DB::transaction(function () use ($user, $kind, $title, $body, $about, $input, $subject, $people, $facts, $straightToCeo, $triage, $activeMonitorRecipients, $shareIds) {
             $now = now('UTC');
             $note = MonitorNote::create([
                 'kind' => $kind,
@@ -156,16 +182,29 @@ class MonitoringService
                 'people' => $people !== [] ? $people : null,
                 'author_id' => $user->id,
                 'created_at' => $now,
-                'sent_at' => $sendNow ? $now : null,
-                'ceo_state' => $sendNow ? 'new' : null,
+                'sent_at' => $straightToCeo ? $now : null,
+                'ceo_state' => $straightToCeo ? 'new' : null,
                 'facts' => $facts,
+                'triage' => $triage,
             ]);
 
-            if ($sendNow) {
+            if ($straightToCeo) {
                 $this->notifyCeos($note->title, (int) $user->id);
+            } elseif ($triage === 'pending' && $activeMonitorRecipients !== []) {
+                $this->notifications->notify($activeMonitorRecipients, 'note_sent', [
+                    'actor_id' => $user->id,
+                    'data' => [
+                        'title' => $note->title,
+                        'queue' => 'monitor',
+                    ],
+                ]);
             }
 
-            return $note;
+            if ($shareIds !== []) {
+                $this->applyShares($note, $shareIds, (int) $user->id);
+            }
+
+            return $note->fresh(['shares']);
         });
     }
 
@@ -183,8 +222,129 @@ class MonitoringService
 
             $this->notifyCeos($note->title, (int) $user->id);
 
-            return $note->fresh();
+            return $note->fresh(['shares']);
         });
+    }
+
+    public function forwardRequest(User $user, int $id, ?string $rawNote): MonitorNote
+    {
+        if (! $this->access->canTriageRequests($user)) {
+            throw ApiException::forbidden('api.monitoring.request_triage_forbidden');
+        }
+
+        $note = $this->findWaitingRequestOrFail($user, $id);
+        $text = $rawNote !== null ? trim($rawNote) : '';
+        if ($text !== '' && mb_strlen($text) > self::LIMITS['reply']) {
+            throw ApiException::validation('note', 'api.monitoring.forward_note_max');
+        }
+
+        return DB::transaction(function () use ($user, $note, $text) {
+            $now = now('UTC');
+            $note->triage = 'forwarded';
+            $note->triaged_by = $user->id;
+            $note->triaged_at = $now;
+            if ($text !== '') {
+                $note->forward_note = $text;
+            }
+            $note->sent_at = $now;
+            $note->ceo_state = 'new';
+            $note->save();
+
+            $this->notifyCeos($note->title, (int) $user->id);
+
+            return $note->fresh(['shares']);
+        });
+    }
+
+    public function answerRequest(User $user, int $id, string $rawReply): MonitorNote
+    {
+        if (! $this->access->canTriageRequests($user)) {
+            throw ApiException::forbidden('api.monitoring.request_triage_forbidden');
+        }
+
+        $note = $this->findWaitingRequestOrFail($user, $id);
+        $reply = trim($rawReply);
+        if ($reply === '') {
+            throw ApiException::validation('reply', 'api.monitoring.reply_required');
+        }
+        if (mb_strlen($reply) > self::LIMITS['reply']) {
+            throw ApiException::validation('reply', 'api.monitoring.reply_max');
+        }
+
+        return DB::transaction(function () use ($user, $note, $reply) {
+            $note->triage = 'answered';
+            $note->triaged_by = $user->id;
+            $note->triaged_at = now('UTC');
+            $note->monitor_reply = $reply;
+            $note->save();
+
+            $this->notifications->notify([(int) $note->author_id], 'note_answered', [
+                'actor_id' => $user->id,
+                'data' => [
+                    'title' => $note->title,
+                    'note' => $reply,
+                    'note_kind' => 'request',
+                ],
+            ]);
+
+            return $note->fresh(['shares']);
+        });
+    }
+
+    /**
+     * @param  array<int, mixed>  $userIds
+     */
+    public function share(User $user, int $id, array $userIds): MonitorNote
+    {
+        $note = $this->findForUserOrFail($user, $id);
+        if (! $this->access->canShareNote($user, $note)) {
+            throw ApiException::forbidden('api.monitoring.share_forbidden');
+        }
+
+        if ($userIds === []) {
+            throw ApiException::validation('share_ids', 'api.monitoring.share_min');
+        }
+
+        $validatedIds = $this->validateShareIds($userIds);
+
+        return DB::transaction(function () use ($note, $validatedIds, $user) {
+            $this->applyShares($note, $validatedIds, (int) $user->id);
+
+            return $note->fresh(['shares']);
+        });
+    }
+
+    /**
+     * @return Collection<int, MonitorNote>
+     */
+    public function received(User $user): Collection
+    {
+        return MonitorNote::query()
+            ->with('shares')
+            ->whereHas('shares', fn ($q) => $q->where('user_id', $user->id))
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get();
+    }
+
+    public function markSeen(User $user, int $id): MonitorNote
+    {
+        $note = $this->findForUserOrFail($user, $id);
+        $share = MonitorNoteShare::query()
+            ->where('note_id', $note->id)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (! $share) {
+            throw ApiException::notFound('api.monitoring.not_found');
+        }
+
+        if ($share->seen_at === null) {
+            $share->seen_at = now('UTC');
+            $share->save();
+        }
+
+        return $note->fresh(['shares']);
     }
 
     /**
@@ -197,6 +357,7 @@ class MonitoringService
         }
 
         return MonitorNote::query()
+            ->with('shares')
             ->whereNotNull('sent_at')
             ->orderByDesc('sent_at')
             ->orderByDesc('id')
@@ -253,7 +414,7 @@ class MonitoringService
 
             $note->save();
 
-            return $note->fresh();
+            return $note->fresh(['shares']);
         });
     }
 
@@ -277,12 +438,82 @@ class MonitoringService
 
     private function findForUserOrFail(User $user, int $id): MonitorNote
     {
-        $note = MonitorNote::query()->find($id);
+        $note = MonitorNote::query()->with('shares')->find($id);
         if (! $note || ! $this->access->canSeeNote($user, $note)) {
             throw ApiException::notFound('api.monitoring.not_found');
         }
 
         return $note;
+    }
+
+    private function findWaitingRequestOrFail(User $user, int $id): MonitorNote
+    {
+        $note = MonitorNote::query()->with('shares')->find($id);
+        if (! $note || ! $this->access->canSeeNote($user, $note) || $note->kind !== 'request') {
+            throw ApiException::notFound('api.monitoring.request_not_found');
+        }
+        if ($note->triage !== 'pending') {
+            throw ApiException::badState('api.monitoring.request_already_handled');
+        }
+
+        return $note;
+    }
+
+    /**
+     * @param  array<int, mixed>  $rawIds
+     * @return int[]
+     */
+    private function validateShareIds(array $rawIds): array
+    {
+        $unique = array_values(array_unique(array_map('intval', $rawIds)));
+        if (count($unique) > self::LIMITS['people']) {
+            throw ApiException::validation('share_ids', 'api.monitoring.people_max');
+        }
+        if ($unique !== []) {
+            $activeCount = User::query()->whereIn('id', $unique)->where('active', true)->count();
+            if ($activeCount !== count($unique)) {
+                throw ApiException::validation('share_ids', 'api.monitoring.people_invalid');
+            }
+        }
+
+        return $unique;
+    }
+
+    /**
+     * @param  int[]  $ids
+     */
+    private function applyShares(MonitorNote $note, array $ids, int $actorId): void
+    {
+        $users = User::query()->whereIn('id', $ids)->where('active', true)->get()->keyBy('id');
+        $already = MonitorNoteShare::query()->where('note_id', $note->id)->pluck('user_id')->map(fn ($id) => (int) $id)->all();
+        $now = now('UTC');
+        $added = [];
+
+        foreach ($ids as $id) {
+            $targetUser = $users->get($id);
+            if (! $targetUser || (int) $targetUser->id === (int) $note->author_id || $targetUser->role === 'ceo' || in_array((int) $targetUser->id, $already, true)) {
+                continue;
+            }
+            MonitorNoteShare::create([
+                'note_id' => $note->id,
+                'user_id' => $targetUser->id,
+                'label' => $targetUser->name,
+                'label_en' => $targetUser->name_en,
+                'shared_at' => $now,
+            ]);
+            $added[] = (int) $targetUser->id;
+            $already[] = (int) $targetUser->id;
+        }
+
+        if ($added !== []) {
+            $this->notifications->notify($added, 'note_sent', [
+                'actor_id' => $actorId,
+                'data' => [
+                    'title' => $note->title,
+                    'queue' => 'received',
+                ],
+            ]);
+        }
     }
 
     /**

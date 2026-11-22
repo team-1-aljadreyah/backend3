@@ -12,7 +12,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 class AttachmentController extends Controller
 {
@@ -65,7 +66,7 @@ class AttachmentController extends Controller
         return ApiResponse::success(null);
     }
 
-    public function download(Request $request, int $attachment): StreamedResponse
+    public function download(Request $request, int $attachment): Response
     {
         if (! URL::hasValidSignature($request)) {
             throw ApiException::forbidden();
@@ -78,10 +79,29 @@ class AttachmentController extends Controller
         }
 
         $record = $this->attachments->findForDownload($user, $attachment);
+        $disk = Storage::disk(AttachmentService::diskName());
+        $fullPath = $disk->path($record->disk_path);
 
-        return Storage::disk(AttachmentService::diskName())->download($record->disk_path, $record->name, [
+        if (is_file($fullPath)) {
+            $disposition = $record->voice !== null || str_starts_with($record->mime, 'audio/') || str_starts_with($record->mime, 'image/')
+                ? 'inline'
+                : 'attachment';
+
+            $response = new BinaryFileResponse($fullPath, 200, [
+                'Content-Type' => $record->mime,
+                'X-Content-Type-Options' => 'nosniff',
+                'Accept-Ranges' => 'bytes',
+            ], true, $disposition);
+
+            $response->prepare($request);
+
+            return $response;
+        }
+
+        return $disk->download($record->disk_path, $record->name, [
             'Content-Type' => $record->mime,
             'X-Content-Type-Options' => 'nosniff',
+            'Accept-Ranges' => 'bytes',
         ]);
     }
 
@@ -94,7 +114,14 @@ class AttachmentController extends Controller
 
     private function uploadOwner(Request $request, string $ownerType, int $ownerId): JsonResponse
     {
-        $attachment = $this->attachments->upload($request->user(), $ownerType, $ownerId, $request->file('file'));
+        $rawVoice = $request->has('voice') ? $request->input('voice') : null;
+        $attachment = $this->attachments->upload(
+            $request->user(),
+            $ownerType,
+            $ownerId,
+            $request->file('file'),
+            $rawVoice
+        );
 
         return ApiResponse::success((new AttachmentResource($attachment))->resolve($request), 201);
     }

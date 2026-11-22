@@ -29,6 +29,7 @@ class DeploymentCheckCommand extends Command
         'app_settings',
         'attachments',
         'audit_logs',
+        'auth_sessions',
         'avatars',
         'bug_events',
         'bugs',
@@ -47,6 +48,7 @@ class DeploymentCheckCommand extends Command
         'login_security',
         'messages',
         'migrations',
+        'monitor_note_shares',
         'monitor_notes',
         'notification_preferences',
         'notifications',
@@ -62,6 +64,8 @@ class DeploymentCheckCommand extends Command
         'project_statuses',
         'project_templates',
         'projects',
+        'push_subscriptions',
+        'ratings',
         'sessions',
         'sprints',
         'task_approvals',
@@ -166,10 +170,10 @@ class DeploymentCheckCommand extends Command
                 }
 
                 $migrationCount = Schema::hasTable('migrations') ? DB::table('migrations')->count() : 0;
-                if ($migrationCount >= 12) {
+                if ($migrationCount >= 13) {
                     $this->reportPass('Migrations table', "{$migrationCount} completed migration records present");
                 } else {
-                    $this->reportFail('Migrations table', "Expected >= 12 migration records, found {$migrationCount}");
+                    $this->reportFail('Migrations table', "Expected >= 13 migration records, found {$migrationCount}");
                     $failures++;
                 }
 

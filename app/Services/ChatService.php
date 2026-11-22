@@ -21,11 +21,16 @@ class ChatService
 {
     public const LIMITS = ['body' => 4000, 'groupName' => 60, 'groupOthers' => 2];
 
+    private readonly PushService $push;
+
     public function __construct(
         private readonly AccessService $access,
         private readonly NotificationService $notifications,
         private readonly AdvancedSettingsService $advanced,
-    ) {}
+        ?PushService $push = null,
+    ) {
+        $this->push = $push ?? app(PushService::class);
+    }
 
     /**
      * @return array{kind: string, id: int}|null
@@ -209,7 +214,7 @@ class ChatService
             fn (int $id) => $id !== (int) $user->id && in_array($id, $members, true)
         ));
 
-        return DB::transaction(function () use ($user, $key, $body, $replyTo, $mentions) {
+        return DB::transaction(function () use ($user, $key, $body, $replyTo, $mentions, $members) {
             $now = now('UTC');
             $message = Message::create([
                 'chat_key' => $key,
@@ -232,6 +237,8 @@ class ChatService
                     'data' => ['note' => mb_substr($body, 0, 120)],
                 ]);
             }
+
+            $this->push->queueForChatMessage($message, $user, $key, $members);
 
             $message->files = collect();
 

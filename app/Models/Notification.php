@@ -32,6 +32,10 @@ class Notification extends Model
         'github_pr_merged',
         'note_sent',
         'note_answered',
+        'team_rated',
+        'person_rated',
+        'birthday_soon',
+        'birthday_today',
     ];
 
     public const REQUIRED_KINDS = [
@@ -57,6 +61,7 @@ class Notification extends Model
         'announcement_id',
         'bug_id',
         'chat_key',
+        'team_id',
         'data',
         'dedup_key',
         'at',
@@ -72,6 +77,7 @@ class Notification extends Model
             'task_id' => 'integer',
             'announcement_id' => 'integer',
             'bug_id' => 'integer',
+            'team_id' => 'integer',
             'data' => 'array',
             'at' => 'datetime',
             'read' => 'boolean',

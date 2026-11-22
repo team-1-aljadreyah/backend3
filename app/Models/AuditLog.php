@@ -27,6 +27,11 @@ class AuditLog extends Model
         'criteria_approved',
         'review_finalized',
         'picture_removed',
+        'session_ended',
+        'sessions_ended',
+        'users_imported',
+        'rating_changed',
+        'rating_deleted',
     ];
 
     public $timestamps = false;

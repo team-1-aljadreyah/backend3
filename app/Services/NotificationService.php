@@ -10,15 +10,19 @@ use App\Models\Project;
 use App\Models\Task;
 use App\Models\User;
 use App\Support\BaghdadTime;
+use App\Support\Birthday;
 use Illuminate\Database\QueryException;
 
 class NotificationService
 {
     private readonly AdvancedSettingsService $advanced;
 
-    public function __construct(?AdvancedSettingsService $advanced = null)
+    private readonly PushService $push;
+
+    public function __construct(?AdvancedSettingsService $advanced = null, ?PushService $push = null)
     {
         $this->advanced = $advanced ?? app(AdvancedSettingsService::class);
+        $this->push = $push ?? app(PushService::class);
     }
 
     public function wants(int $userId, string $kind): bool
@@ -93,7 +97,7 @@ class NotificationService
             }
 
             try {
-                Notification::create([
+                $notification = Notification::create([
                     'user_id' => $userId,
                     'kind' => $kind,
                     'actor_id' => $actorId,
@@ -102,12 +106,14 @@ class NotificationService
                     'announcement_id' => $about['announcement_id'] ?? null,
                     'bug_id' => $about['bug_id'] ?? null,
                     'chat_key' => $about['chat_key'] ?? null,
+                    'team_id' => $about['team_id'] ?? null,
                     'data' => $about['data'],
                     'dedup_key' => $dedupKey,
                     'at' => $now,
                     'read' => false,
                 ]);
                 $created++;
+                $this->push->queueForNotification($notification);
             } catch (QueryException $e) {
                 // Idempotent deduplication on unique dedup_key.
                 if ($dedupKey === null) {
@@ -150,15 +156,21 @@ class NotificationService
     }
 
     /**
-     * Run daily Baghdad-time reminders for due/overdue tasks and late bugs.
+     * Run daily Baghdad-time reminders for due/overdue tasks, late bugs, and birthdays.
      *
-     * @return array{tasks_due_soon: int, tasks_overdue: int, bugs_late: int}
+     * @return array{tasks_due_soon: int, tasks_overdue: int, bugs_late: int, birthdays_soon: int, birthdays_today: int}
      */
-    public function sendDailyReminders(): array
+    public function sendDailyReminders(?string $day = null): array
     {
-        $today = BaghdadTime::today();
+        $today = ($day !== null && Birthday::isRealDay($day)) ? $day : BaghdadTime::today();
         $dueSoonDays = AppSetting::current()->due_soon_days;
-        $counts = ['tasks_due_soon' => 0, 'tasks_overdue' => 0, 'bugs_late' => 0];
+        $counts = [
+            'tasks_due_soon' => 0,
+            'tasks_overdue' => 0,
+            'bugs_late' => 0,
+            'birthdays_soon' => 0,
+            'birthdays_today' => 0,
+        ];
 
         $tasks = Task::query()
             ->whereNotNull('assignee_id')
@@ -232,6 +244,60 @@ class NotificationService
                 $counts['bugs_late'] += $created;
             }
         }
+
+        // Birthdays (section 20): active monitors & CEO receive birthday_soon (7d before) and birthday_today (on day).
+        $birthdayReceivers = User::query()
+            ->where('active', true)
+            ->whereIn('role', ['monitor', 'ceo'])
+            ->get(['id', 'role']);
+
+        if ($birthdayReceivers->isNotEmpty()) {
+            $birthdayPeople = User::query()
+                ->where('active', true)
+                ->whereNotNull('birth_date')
+                ->get(['id', 'name', 'name_en', 'birth_date']);
+
+            foreach ($birthdayPeople as $person) {
+                $birthStr = $person->birth_date instanceof \Carbon\CarbonInterface
+                    ? $person->birth_date->format('Y-m-d')
+                    : substr((string) $person->birth_date, 0, 10);
+
+                $due = Birthday::reminderForDay($birthStr, $today);
+                if ($due === null) {
+                    continue;
+                }
+
+                $kind = $due['kind'];
+                $dueDate = $due['date'];
+                $payload = [
+                    'person_id' => (int) $person->id,
+                    'person_name' => $person->name,
+                    'due' => $dueDate,
+                ];
+                if ($person->name_en !== null && $person->name_en !== '') {
+                    $payload['person_name_en'] = $person->name_en;
+                }
+
+                foreach ($birthdayReceivers as $receiver) {
+                    if ((int) $receiver->id === (int) $person->id) {
+                        continue;
+                    }
+                    $dedup = "{$kind}:{$receiver->id}:person:{$person->id}:{$dueDate}";
+                    if (Notification::query()->where('dedup_key', $dedup)->exists()) {
+                        continue;
+                    }
+                    $created = $this->notify([(int) $receiver->id], $kind, [
+                        'dedup_key' => $dedup,
+                        'data' => $payload,
+                    ]);
+                    if ($created > 0) {
+                        $counts[$kind === 'birthday_today' ? 'birthdays_today' : 'birthdays_soon'] += $created;
+                    }
+                }
+            }
+        }
+
+        $this->push->pruneStale();
 
         return $counts;
     }

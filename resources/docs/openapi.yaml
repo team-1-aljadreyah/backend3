@@ -62,6 +62,8 @@ components:
         team_id: { type: integer, nullable: true }
         active: { type: boolean }
         avatar_url: { type: string, format: uri, nullable: true }
+        birth_date: { type: string, format: date, nullable: true }
+        birthday: { type: string, example: "03-07", nullable: true }
     Team:
       type: object
       required: [id, name]
@@ -136,9 +138,62 @@ components:
         name: { type: string }
         size: { type: integer }
         mime: { type: string }
+        voice:
+          type: object
+          nullable: true
+          properties:
+            duration_s: { type: number }
+            peaks: { type: array, items: { type: integer } }
         url: { type: string, format: uri }
         uploaded_by: { type: integer }
         at: { type: string, format: date-time }
+    Rating:
+      type: object
+      required: [id, subject_type, subject_id, rater_id, score, reason_type, reason, private, created_at]
+      properties:
+        id: { type: integer }
+        subject_type: { type: string, enum: [team, person] }
+        subject_id: { type: integer }
+        rater_id: { type: integer }
+        score: { type: integer, minimum: 1, maximum: 5 }
+        reason_type: { type: string, enum: [quality, deadlines, teamwork, attitude, incident, other] }
+        reason: { type: string }
+        project_id: { type: integer, nullable: true }
+        project_name: { type: string, nullable: true }
+        project_name_en: { type: string, nullable: true }
+        period:
+          type: object
+          nullable: true
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+        private: { type: boolean }
+        created_at: { type: string, format: date-time }
+        edited_at: { type: string, format: date-time, nullable: true }
+        edited_by: { type: integer, nullable: true }
+    AdminSession:
+      type: object
+      required: [id, user_id, started_at, last_seen_at]
+      properties:
+        id: { type: string }
+        user_id: { type: integer }
+        ip: { type: string, nullable: true }
+        user_agent: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        current: { type: boolean }
+    PushSubscriptionInput:
+      type: object
+      required: [endpoint, keys, device]
+      properties:
+        endpoint: { type: string, format: uri }
+        keys:
+          type: object
+          required: [p256dh, auth]
+          properties:
+            p256dh: { type: string }
+            auth: { type: string }
+        device: { type: string }
 paths:
   /auth/login:
     post:
@@ -531,11 +586,80 @@ paths:
   /admin/users:
     get: { tags: [Admin], responses: { '200': { description: 'AdminUser[]' } } }
     post: { tags: [Admin], responses: { '201': { description: User } } }
+  /admin/users/import:
+    post: { tags: [Admin], responses: { '200': { description: ImportResult } } }
   /admin/users/{id}:
     patch:
       tags: [Admin]
       parameters: [{ $ref: '#/components/parameters/IdParam' }]
       responses: { '200': { description: User } }
+  /admin/users/{id}/unlock:
+    post:
+      tags: [Admin]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: AdminUser }, '409': { description: Not locked } }
+  /admin/users/{id}/sessions:
+    delete:
+      tags: [Admin]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: Sessions ended count } }
+  /admin/sessions:
+    get: { tags: [Admin], responses: { '200': { description: 'AdminSession[]' } } }
+  /admin/sessions/{id}:
+    delete:
+      tags: [Admin]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '200': { description: Ended }, '409': { description: Cannot end current session } }
+  /admin/security/summary:
+    get: { tags: [Admin], responses: { '200': { description: SecuritySummary } } }
+  /me/push-subscriptions:
+    post:
+      tags: [Push]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PushSubscriptionInput' }
+      responses: { '200': { description: Subscribed } }
+    delete:
+      tags: [Push]
+      responses: { '200': { description: Unsubscribed } }
+  /teams/ratings/summary:
+    get: { tags: [Ratings], responses: { '200': { description: 'TeamListRow[]' } } }
+  /teams/{id}:
+    get:
+      tags: [Ratings]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: TeamDetail } }
+  /teams/{id}/ratings:
+    get:
+      tags: [Ratings]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: RatingList } }
+    post:
+      tags: [Ratings]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '201': { description: Rating } }
+  /people/ratings/summary:
+    get: { tags: [Ratings], responses: { '200': { description: 'PersonRatingRow[]' } } }
+  /people/{id}/ratings:
+    get:
+      tags: [Ratings]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: RatingList } }
+    post:
+      tags: [Ratings]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '201': { description: Rating } }
+  /ratings/{id}:
+    patch:
+      tags: [Ratings]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: Rating }, '409': { description: Edit window expired } }
+    delete:
+      tags: [Ratings]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: Deleted }, '409': { description: Delete window expired } }
   /admin/teams:
     post: { tags: [Admin], responses: { '201': { description: Team } } }
   /admin/teams/{id}:
@@ -577,6 +701,30 @@ paths:
       tags: [Monitoring]
       parameters: [{ $ref: '#/components/parameters/IdParam' }]
       responses: { '200': { description: MonitorNote } }
+  /monitoring/notes/{id}/share:
+    post:
+      tags: [Monitoring]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: MonitorNote } }
+  /monitoring/notes/{id}/seen:
+    post:
+      tags: [Monitoring]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: MonitorNote } }
+  /monitoring/received:
+    get:
+      tags: [Monitoring]
+      responses: { '200': { description: 'MonitorNote[]' } }
+  /monitoring/requests/{id}/forward:
+    post:
+      tags: [Monitoring]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: MonitorNote }, '409': { description: Already handled } }
+  /monitoring/requests/{id}/answer:
+    post:
+      tags: [Monitoring]
+      parameters: [{ $ref: '#/components/parameters/IdParam' }]
+      responses: { '200': { description: MonitorNote }, '409': { description: Already handled } }
   /monitoring/report-facts:
     get:
       tags: [Monitoring]

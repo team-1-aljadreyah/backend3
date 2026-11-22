@@ -322,7 +322,7 @@ class BugService
         return User::query()
             ->where('active', true)
             ->where(function ($q) use ($project, $memberIds) {
-                $q->where('role', 'ceo')
+                $q->whereIn('role', ['ceo', 'monitor'])
                     ->orWhere('id', $project->pm_id)
                     ->orWhere(function ($q2) use ($memberIds) {
                         $q2->where('role', 'lead')->whereIn('id', $memberIds);

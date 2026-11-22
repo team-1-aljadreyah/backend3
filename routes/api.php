@@ -13,6 +13,8 @@ use App\Http\Controllers\Api\V1\MonitoringController;
 use App\Http\Controllers\Api\V1\NotificationController;
 use App\Http\Controllers\Api\V1\PerformanceController;
 use App\Http\Controllers\Api\V1\ProjectController;
+use App\Http\Controllers\Api\V1\PushController;
+use App\Http\Controllers\Api\V1\RatingController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\SearchController;
 use App\Http\Controllers\Api\V1\SprintController;
@@ -83,6 +85,8 @@ Route::prefix('v1')->group(function () {
         Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
         Route::get('/notifications/preferences', [NotificationController::class, 'preferences']);
         Route::put('/notifications/preferences', [NotificationController::class, 'savePreferences']);
+        Route::post('/me/push-subscriptions', [PushController::class, 'store']);
+        Route::delete('/me/push-subscriptions', [PushController::class, 'destroy']);
 
         // Attachments
         Route::get('/tasks/{id}/attachments', [AttachmentController::class, 'listForTask'])->whereNumber('id');
@@ -137,7 +141,13 @@ Route::prefix('v1')->group(function () {
         // Administration & audit log
         Route::get('/admin/users', [AdminController::class, 'users']);
         Route::post('/admin/users', [AdminController::class, 'createUser']);
+        Route::post('/admin/users/import', [AdminController::class, 'importUsers']);
         Route::patch('/admin/users/{id}', [AdminController::class, 'updateUser'])->whereNumber('id');
+        Route::post('/admin/users/{id}/unlock', [AdminController::class, 'unlockUser'])->whereNumber('id');
+        Route::delete('/admin/users/{id}/sessions', [AdminController::class, 'endUserSessions'])->whereNumber('id');
+        Route::get('/admin/sessions', [AdminController::class, 'sessions']);
+        Route::delete('/admin/sessions/{id}', [AdminController::class, 'endSession'])->where('id', '[a-zA-Z0-9_-]+');
+        Route::get('/admin/security/summary', [AdminController::class, 'securitySummary']);
         Route::post('/admin/teams', [AdminController::class, 'createTeam']);
         Route::patch('/admin/teams/{id}', [AdminController::class, 'updateTeam'])->whereNumber('id');
         Route::get('/admin/settings', [AdminController::class, 'settings']);
@@ -146,10 +156,26 @@ Route::prefix('v1')->group(function () {
         Route::get('/audit', [AdminController::class, 'audit']);
         Route::get('/audit/{id}', [AdminController::class, 'auditEntry'])->whereNumber('id');
 
+        // Quick ratings of teams and people
+        Route::get('/teams/ratings/summary', [RatingController::class, 'teamSummaries']);
+        Route::get('/teams/{id}', [RatingController::class, 'teamDetail'])->whereNumber('id');
+        Route::get('/teams/{id}/ratings', [RatingController::class, 'teamRatings'])->whereNumber('id');
+        Route::post('/teams/{id}/ratings', [RatingController::class, 'rateTeam'])->whereNumber('id');
+        Route::get('/people/ratings/summary', [RatingController::class, 'peopleSummaries']);
+        Route::get('/people/{id}/ratings', [RatingController::class, 'personRatings'])->whereNumber('id');
+        Route::post('/people/{id}/ratings', [RatingController::class, 'ratePerson'])->whereNumber('id');
+        Route::patch('/ratings/{id}', [RatingController::class, 'update'])->whereNumber('id');
+        Route::delete('/ratings/{id}', [RatingController::class, 'destroy'])->whereNumber('id');
+
         // Monitoring notes, requests & CEO inbox
         Route::get('/monitoring/notes', [MonitoringController::class, 'notes']);
         Route::post('/monitoring/notes', [MonitoringController::class, 'create']);
         Route::post('/monitoring/notes/{id}/send', [MonitoringController::class, 'send'])->whereNumber('id');
+        Route::post('/monitoring/notes/{id}/share', [MonitoringController::class, 'share'])->whereNumber('id');
+        Route::post('/monitoring/notes/{id}/seen', [MonitoringController::class, 'markSeen'])->whereNumber('id');
+        Route::get('/monitoring/received', [MonitoringController::class, 'received']);
+        Route::post('/monitoring/requests/{id}/forward', [MonitoringController::class, 'forwardRequest'])->whereNumber('id');
+        Route::post('/monitoring/requests/{id}/answer', [MonitoringController::class, 'answerRequest'])->whereNumber('id');
         Route::get('/monitoring/report-facts', [MonitoringController::class, 'reportFacts']);
         Route::get('/ceo/inbox', [MonitoringController::class, 'inbox']);
         Route::post('/ceo/inbox/{id}/answer', [MonitoringController::class, 'answer'])->whereNumber('id');

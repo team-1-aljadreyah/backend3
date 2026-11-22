@@ -34,6 +34,53 @@ class MonitoringController extends Controller
         return ApiResponse::success((new MonitorNoteResource($note))->resolve($request));
     }
 
+    public function forwardRequest(Request $request, int $id): JsonResponse
+    {
+        $note = $this->monitoring->forwardRequest(
+            $request->user(),
+            $id,
+            $request->input('note') !== null ? (string) $request->input('note') : null
+        );
+
+        return ApiResponse::success((new MonitorNoteResource($note))->resolve($request));
+    }
+
+    public function answerRequest(Request $request, int $id): JsonResponse
+    {
+        $note = $this->monitoring->answerRequest(
+            $request->user(),
+            $id,
+            (string) $request->input('reply', '')
+        );
+
+        return ApiResponse::success((new MonitorNoteResource($note))->resolve($request));
+    }
+
+    public function share(Request $request, int $id): JsonResponse
+    {
+        $note = $this->monitoring->share(
+            $request->user(),
+            $id,
+            (array) $request->input('user_ids', [])
+        );
+
+        return ApiResponse::success((new MonitorNoteResource($note))->resolve($request));
+    }
+
+    public function received(Request $request): JsonResponse
+    {
+        $list = $this->monitoring->received($request->user());
+
+        return ApiResponse::success(MonitorNoteResource::collection($list)->resolve($request));
+    }
+
+    public function markSeen(Request $request, int $id): JsonResponse
+    {
+        $note = $this->monitoring->markSeen($request->user(), $id);
+
+        return ApiResponse::success((new MonitorNoteResource($note))->resolve($request));
+    }
+
     public function inbox(Request $request): JsonResponse
     {
         $list = $this->monitoring->inbox($request->user());

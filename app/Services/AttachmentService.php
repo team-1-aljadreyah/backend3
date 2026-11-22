@@ -24,6 +24,22 @@ class AttachmentService
 
     public const MAX_FILES = 30;
 
+    public const MAX_VOICE_BYTES = 5 * 1024 * 1024;
+
+    public const MAX_VOICE_SECONDS = 300;
+
+    public const VOICE_PEAKS = 48;
+
+    public const VOICE_EXTENSIONS = ['webm', 'weba', 'ogg', 'oga', 'opus', 'mp4', 'm4a', 'aac', 'mp3'];
+
+    public const VOICE_MIMES = [
+        'webm' => 'audio/webm',
+        'ogg' => 'audio/ogg',
+        'mp4' => 'audio/mp4',
+        'mp3' => 'audio/mpeg',
+        'aac' => 'audio/aac',
+    ];
+
     public const ALLOWED_EXTENSIONS = [
         'png', 'jpg', 'jpeg', 'gif', 'webp',
         'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
@@ -96,11 +112,18 @@ class AttachmentService
             ->get();
     }
 
-    public function upload(User $user, string $ownerType, int $ownerId, ?UploadedFile $file): Attachment
+    /**
+     * @param  array<string, mixed>|string|null  $rawVoice
+     */
+    public function upload(User $user, string $ownerType, int $ownerId, ?UploadedFile $file, array|string|null $rawVoice = null): Attachment
     {
         $perms = $this->authorizeAccess($user, $ownerType, $ownerId);
         if (! $perms['canAdd']) {
             throw ApiException::forbidden('api.attachments.upload_forbidden');
+        }
+
+        if ($rawVoice !== null && $rawVoice !== '') {
+            return $this->uploadVoice($user, $ownerType, $ownerId, $file, $rawVoice);
         }
 
         if (! $file || ! $file->isValid()) {
@@ -109,6 +132,9 @@ class AttachmentService
 
         $originalName = $file->getClientOriginalName();
         $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        if ($ownerType === 'message' && in_array($ext, self::VOICE_EXTENSIONS, true)) {
+            throw ApiException::validation('voice', 'api.attachments.voice_missing_meta');
+        }
         if ($ext === '' || ! in_array($ext, self::ALLOWED_EXTENSIONS, true)) {
             throw ApiException::validation('file', 'api.attachments.type_not_allowed');
         }
@@ -300,6 +326,137 @@ class AttachmentService
             $mime = $finfo->file($path);
 
             return is_string($mime) ? strtolower($mime) : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>|string  $rawVoice
+     */
+    private function uploadVoice(User $user, string $ownerType, int $ownerId, ?UploadedFile $file, array|string $rawVoice): Attachment
+    {
+        if ($ownerType !== 'message') {
+            throw ApiException::validation('voice', 'api.attachments.voice_message_only');
+        }
+
+        if (! $file || ! $file->isValid()) {
+            throw ApiException::validation('file', 'api.attachments.file_required');
+        }
+
+        $voice = is_string($rawVoice) ? json_decode($rawVoice, true) : $rawVoice;
+        if (! is_array($voice)) {
+            throw ApiException::validation('voice', 'api.attachments.voice_peaks');
+        }
+
+        $hasVoiceAlready = Attachment::query()
+            ->where('owner_type', 'message')
+            ->where('owner_id', $ownerId)
+            ->whereNotNull('voice')
+            ->exists();
+        if ($hasVoiceAlready) {
+            throw ApiException::validation('file', 'api.attachments.voice_duplicate');
+        }
+
+        $originalName = $file->getClientOriginalName();
+        $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        if ($ext === '' || ! in_array($ext, self::VOICE_EXTENSIONS, true)) {
+            throw ApiException::validation('file', 'api.attachments.voice_type_not_allowed');
+        }
+
+        $size = (int) $file->getSize();
+        if ($size <= 0) {
+            throw ApiException::validation('file', 'api.attachments.voice_empty');
+        }
+        if ($size > self::MAX_VOICE_BYTES) {
+            throw ApiException::validation('file', 'api.attachments.voice_too_large');
+        }
+
+        $duration = $voice['duration_s'] ?? null;
+        if ((! is_int($duration) && ! is_float($duration)) || ! is_finite((float) $duration) || (float) $duration <= 0 || (float) $duration > self::MAX_VOICE_SECONDS) {
+            throw ApiException::validation('voice', 'api.attachments.voice_duration');
+        }
+
+        $peaks = $voice['peaks'] ?? null;
+        if (! is_array($peaks) || count($peaks) !== self::VOICE_PEAKS) {
+            throw ApiException::validation('voice', 'api.attachments.voice_peaks');
+        }
+        $normalizedPeaks = [];
+        foreach ($peaks as $p) {
+            if (! is_int($p) || $p < 0 || $p > 100) {
+                throw ApiException::validation('voice', 'api.attachments.voice_peaks');
+            }
+            $normalizedPeaks[] = $p;
+        }
+
+        $realPath = $file->getRealPath();
+        $head = ($realPath && is_file($realPath)) ? (string) file_get_contents($realPath, false, null, 0, 16) : '';
+        $kind = $this->sniffAudio($head);
+        if ($kind === null) {
+            throw ApiException::validation('file', 'api.attachments.voice_type_not_allowed');
+        }
+        if ($kind === 'mp4' && $realPath && is_file($realPath)) {
+            $sample = (string) file_get_contents($realPath, false, null, 0, 65536);
+            if (str_contains($sample, 'vide') || str_contains($sample, 'avc1') || str_contains($sample, 'hvc1')) {
+                throw ApiException::validation('file', 'api.attachments.voice_type_not_allowed');
+            }
+        }
+
+        $existingCount = Attachment::query()
+            ->where('owner_type', 'message')
+            ->where('owner_id', $ownerId)
+            ->count();
+        if ($existingCount >= self::MAX_FILES) {
+            throw ApiException::validation('file', 'api.attachments.max_files', ['max' => self::MAX_FILES]);
+        }
+
+        $storedName = Str::uuid()->toString().".{$ext}";
+        $diskPath = $file->storeAs("attachments/{$ownerType}/{$ownerId}", $storedName, self::diskName());
+        if ($diskPath === false) {
+            throw ApiException::validation('file', 'api.attachments.file_required');
+        }
+
+        $displayName = mb_substr(basename($originalName), 0, 200);
+        $mime = self::VOICE_MIMES[$kind];
+        $voiceMeta = [
+            'duration_s' => round((float) $duration, 1),
+            'peaks' => $normalizedPeaks,
+        ];
+
+        return Attachment::create([
+            'owner_type' => $ownerType,
+            'owner_id' => $ownerId,
+            'name' => $displayName,
+            'size' => $size,
+            'mime' => $mime,
+            'voice' => $voiceMeta,
+            'disk_path' => $diskPath,
+            'uploaded_by' => $user->id,
+            'at' => now('UTC'),
+        ]);
+    }
+
+    public function sniffAudio(string $head): ?string
+    {
+        if (strlen($head) < 4) {
+            return null;
+        }
+        if (str_starts_with($head, "\x1a\x45\xdf\xa3")) {
+            return 'webm';
+        }
+        if (str_starts_with($head, 'OggS')) {
+            return 'ogg';
+        }
+        if (strlen($head) >= 8 && substr($head, 4, 4) === 'ftyp') {
+            return 'mp4';
+        }
+        if (str_starts_with($head, 'ID3')) {
+            return 'mp3';
+        }
+        $b0 = ord($head[0]);
+        $b1 = ord($head[1]);
+        if ($b0 === 0xff && ($b1 & 0xe0) === 0xe0) {
+            return ($b1 & 0x06) === 0 ? 'aac' : 'mp3';
         }
 
         return null;

@@ -7,23 +7,44 @@ use App\Http\Resources\AuditLogResource;
 use App\Models\AppSetting;
 use App\Models\Attachment;
 use App\Models\AuditLog;
+use App\Models\AuthSession;
+use App\Models\Avatar;
 use App\Models\LoginSecurity;
 use App\Models\Project;
 use App\Models\Task;
 use App\Models\Team;
 use App\Models\User;
+use App\Support\ApiResponse;
 use App\Support\BaghdadTime;
+use App\Support\Birthday;
 use App\Support\SearchNormalizer;
+use Carbon\CarbonInterface;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AdminService
 {
     public const LIMITS = ['name' => 120, 'title' => 80, 'teamName' => 80];
 
+    public const IMPORT_LIMIT = 500;
+
+    public const FAILED_DAYS = 7;
+
     public const RELATED_LIMIT = 20;
+
+    public const IMPORT_ROLES = ['pm', 'monitor', 'lead', 'employee'];
+
+    public const ROLE_WORDS = [
+        'ceo' => ['ar' => 'المدير التنفيذي', 'en' => 'CEO'],
+        'pm' => ['ar' => 'مدير القسم', 'en' => 'Department manager'],
+        'monitor' => ['ar' => 'مسؤول المتابعة والتقييم', 'en' => 'Monitoring & evaluation'],
+        'lead' => ['ar' => 'قائد الفريق', 'en' => 'Team leader'],
+        'employee' => ['ar' => 'موظف', 'en' => 'Employee'],
+        'admin' => ['ar' => 'مسؤول النظام', 'en' => 'System admin'],
+    ];
 
     public const SETTING_RANGES = [
         'due_soon_days' => [1, 7],
@@ -51,6 +72,11 @@ class AdminService
         'criteria_approved' => 'review',
         'review_finalized' => 'review',
         'picture_removed' => 'account',
+        'session_ended' => 'signin',
+        'sessions_ended' => 'signin',
+        'users_imported' => 'account',
+        'rating_changed' => 'review',
+        'rating_deleted' => 'review',
     ];
 
     public const ACTION_WORDS = [
@@ -65,7 +91,7 @@ class AdminService
         'login_failed' => ['ar' => 'محاولة دخول خاطئة', 'en' => 'failed sign-in'],
         'login_locked' => ['ar' => 'قُفل حساب', 'en' => 'account locked'],
         'project_created' => ['ar' => 'أنشأ مشروعاً', 'en' => 'created a project'],
-        'project_pm_changed' => ['ar' => 'غيّر مدير مشروع', 'en' => "changed a project's PM"],
+        'project_pm_changed' => ['ar' => 'غيّر مدير قسم', 'en' => 'changed a project\'s department manager'],
         'sprint_closed' => ['ar' => 'أنهى دورة', 'en' => 'ended a sprint'],
         'template_deleted' => ['ar' => 'حذف قالباً', 'en' => 'removed a template'],
         'announcement_deleted' => ['ar' => 'حذف إعلاناً', 'en' => 'removed an announcement'],
@@ -73,14 +99,24 @@ class AdminService
         'criteria_approved' => ['ar' => 'اعتمد معايير التقييم', 'en' => 'approved the review criteria'],
         'review_finalized' => ['ar' => 'اعتمد تقييم أداء', 'en' => 'made a review final'],
         'picture_removed' => ['ar' => 'أزال صورة شخصية', 'en' => 'removed a profile picture'],
+        'session_ended' => ['ar' => 'أنهى جلسة دخول', 'en' => 'ended a sign-in session'],
+        'sessions_ended' => ['ar' => 'أخرج حساباً من كل الأجهزة', 'en' => 'signed an account out everywhere'],
+        'users_imported' => ['ar' => 'استورد حسابات', 'en' => 'imported accounts'],
+        'rating_changed' => ['ar' => 'عدّل تقييماً سريعاً كتبه غيره', 'en' => 'changed someone else\'s quick rating'],
+        'rating_deleted' => ['ar' => 'حذف تقييماً سريعاً', 'en' => 'removed a quick rating'],
     ];
+
+    private readonly PushService $push;
 
     public function __construct(
         private readonly AccessService $access,
         private readonly AuditService $audit,
         private readonly NotificationService $notifications,
         private readonly AdvancedSettingsService $advanced,
-    ) {}
+        ?PushService $push = null,
+    ) {
+        $this->push = $push ?? app(PushService::class);
+    }
 
     /**
      * @return Collection<int, User>
@@ -115,6 +151,7 @@ class AdminService
                 'phone' => isset($input['phone']) && trim((string) $input['phone']) !== '' ? trim((string) $input['phone']) : null,
                 'role' => $input['role'],
                 'custom_role' => $customRole,
+                'birth_date' => ! empty($input['birth_date']) ? (string) $input['birth_date'] : null,
                 'title' => trim((string) ($input['title'] ?? '')),
                 'team_id' => $input['team_id'] ?? null,
                 'active' => true,
@@ -259,6 +296,18 @@ class AdminService
                     }
                 }
             }
+            if (array_key_exists('birth_date', $patch)) {
+                $nextBirth = ($patch['birth_date'] !== null && $patch['birth_date'] !== '') ? (string) $patch['birth_date'] : null;
+                $prevBirth = $user->birth_date instanceof CarbonInterface
+                    ? $user->birth_date->format('Y-m-d')
+                    : (is_string($user->birth_date) && $user->birth_date !== '' ? substr($user->birth_date, 0, 10) : null);
+
+                if ($nextBirth !== $prevBirth) {
+                    // Privacy: audit records that birth_date changed, never old/new dates.
+                    $changes[] = ['field' => 'birth_date'];
+                    $user->birth_date = $nextBirth;
+                }
+            }
 
             if ($changes !== []) {
                 $this->audit->log($actor->id, 'user_changed', [
@@ -276,6 +325,11 @@ class AdminService
                     'label' => $user->name,
                 ]);
                 if (! $user->active) {
+                    $activeSessions = AuthSession::query()
+                        ->where('user_id', $user->id)
+                        ->whereNull('ended_at')
+                        ->get();
+                    $this->endSessions($activeSessions, (int) $actor->id, 'stopped');
                     $user->tokens()->delete();
                 }
             }
@@ -453,12 +507,22 @@ class AdminService
     }
 
     /**
-     * @return array<string, int>
+     * @return array<string, mixed>
      */
     public function health(User $actor): array
     {
         $this->requireAdmin($actor);
         $now = now('UTC');
+
+        $voiceQuery = Attachment::query()->where(function ($q) {
+            $q->whereNotNull('voice')->orWhere('mime', 'like', 'audio/%');
+        });
+        $nonVoiceQuery = Attachment::query()->whereNull('voice')->where('mime', 'not like', 'audio/%');
+
+        $picturesCount = Avatar::query()->count();
+        $picturesBytes = (int) Avatar::query()->sum('size');
+        $auditCount = AuditLog::query()->count();
+        $auditBytes = $this->estimateAuditBytes($auditCount);
 
         return [
             'users_active' => User::query()->where('active', true)->count(),
@@ -468,8 +532,423 @@ class AdminService
             'tasks' => Task::query()->count(),
             'files' => Attachment::query()->count(),
             'files_bytes' => (int) Attachment::query()->sum('size'),
-            'audit_entries' => AuditLog::query()->count(),
+            'audit_entries' => $auditCount,
+            'storage' => [
+                'attachments_bytes' => (int) (clone $nonVoiceQuery)->sum('size'),
+                'attachments' => (clone $nonVoiceQuery)->count(),
+                'pictures_bytes' => $picturesBytes,
+                'pictures' => $picturesCount,
+                'voice_bytes' => (int) (clone $voiceQuery)->sum('size'),
+                'voice' => (clone $voiceQuery)->count(),
+                'audit_bytes' => $auditBytes,
+            ],
+            'storage_quota_bytes' => (int) config('services.health.storage_quota_bytes', 5 * 1024 * 1024 * 1024),
+            'backup' => $this->readBackupState(),
+            'server_version' => (string) config('services.health.server_version', '2.2.0'),
         ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function sessions(User $actor): array
+    {
+        $this->requireSessionsAdmin($actor);
+        $now = now('UTC');
+        $idleEdge = $now->copy()->subDays(AuthSession::IDLE_DAYS);
+        $currentId = $this->currentSessionId($actor);
+
+        return AuthSession::query()
+            ->whereNull('ended_at')
+            ->where('last_seen_at', '>', $idleEdge)
+            ->orderByDesc('last_seen_at')
+            ->get()
+            ->map(function (AuthSession $s) use ($currentId) {
+                return ApiResponse::clean([
+                    'id' => $s->id,
+                    'user_id' => (int) $s->user_id,
+                    'ip' => $s->ip,
+                    'user_agent' => $s->user_agent,
+                    'started_at' => BaghdadTime::iso($s->started_at),
+                    'last_seen_at' => BaghdadTime::iso($s->last_seen_at),
+                    'current' => $currentId !== null && $s->id === $currentId,
+                ]);
+            })
+            ->values()
+            ->all();
+    }
+
+    public function endSession(User $actor, string $sessionId): void
+    {
+        $this->requireSessionsAdmin($actor);
+
+        $session = AuthSession::query()->find($sessionId);
+        if (! $session) {
+            throw ApiException::notFound('api.admin.session_not_found');
+        }
+        if (! $session->isActive(now('UTC'))) {
+            throw ApiException::notFound('api.admin.session_already_ended');
+        }
+
+        $currentId = $this->currentSessionId($actor);
+        if ($currentId !== null && $session->id === $currentId) {
+            throw ApiException::badState('api.admin.session_current_self');
+        }
+
+        DB::transaction(function () use ($actor, $session) {
+            $this->endSessions(collect([$session]), (int) $actor->id, 'admin');
+        });
+    }
+
+    /**
+     * @return array{ended: int}
+     */
+    public function endUserSessions(User $actor, int $userId): array
+    {
+        $this->requireSessionsAdmin($actor);
+        if (! User::query()->where('id', $userId)->exists()) {
+            throw ApiException::notFound('api.admin.user_not_found');
+        }
+
+        $now = now('UTC');
+        $idleEdge = $now->copy()->subDays(AuthSession::IDLE_DAYS);
+        $currentId = $this->currentSessionId($actor);
+
+        $list = AuthSession::query()
+            ->where('user_id', $userId)
+            ->whereNull('ended_at')
+            ->where('last_seen_at', '>', $idleEdge)
+            ->when($currentId !== null, fn ($q) => $q->where('id', '!=', $currentId))
+            ->get();
+
+        DB::transaction(function () use ($actor, $list) {
+            $this->endSessions($list, (int) $actor->id, 'everywhere');
+        });
+
+        return ['ended' => $list->count()];
+    }
+
+    public function unlockUser(User $actor, int $userId): User
+    {
+        $this->requireAdmin($actor);
+        $user = User::query()->with('loginSecurity')->find($userId);
+        if (! $user) {
+            throw ApiException::notFound('api.admin.user_not_found');
+        }
+
+        $sec = $user->loginSecurity;
+        if (! $sec || ! $sec->locked_until || ! $sec->locked_until->gt(now('UTC'))) {
+            throw ApiException::badState('api.admin.not_locked');
+        }
+
+        DB::transaction(function () use ($actor, $user, $sec) {
+            $sec->failed_logins = 0;
+            $sec->locked_until = null;
+            $sec->save();
+
+            $this->audit->log($actor->id, 'user_unlocked', [
+                'type' => 'user',
+                'id' => $user->id,
+                'label' => $user->name,
+            ]);
+        });
+
+        return $user->fresh('loginSecurity');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function securitySummary(User $actor): array
+    {
+        $this->requireSessionsAdmin($actor);
+
+        $now = now('UTC');
+        $from = $now->copy()->subDays(self::FAILED_DAYS);
+        $settings = AppSetting::current();
+
+        $failed = AuditLog::query()
+            ->where('action', 'login_failed')
+            ->where('at', '>=', $from)
+            ->where('at', '<=', $now)
+            ->get();
+
+        $accounts = [];
+        $ips = [];
+
+        foreach ($failed as $entry) {
+            $key = $entry->target_id !== null
+                ? '#'.$entry->target_id
+                : mb_strtolower((string) $entry->target_label);
+
+            $atIso = BaghdadTime::iso($entry->at) ?? '';
+            $atTs = $entry->at?->getTimestamp() ?? 0;
+
+            if (! isset($accounts[$key])) {
+                $row = [
+                    'label' => (string) $entry->target_label,
+                    'count' => 0,
+                    'last_at' => $atIso,
+                    'last_ts' => $atTs,
+                    'ips' => [],
+                ];
+                if ($entry->target_id !== null) {
+                    $row['user_id'] = (int) $entry->target_id;
+                }
+                $accounts[$key] = $row;
+            }
+            $accounts[$key]['count']++;
+            if ($atTs > $accounts[$key]['last_ts']) {
+                $accounts[$key]['last_ts'] = $atTs;
+                $accounts[$key]['last_at'] = $atIso;
+            }
+            if ($entry->ip !== null && $entry->ip !== '' && ! in_array($entry->ip, $accounts[$key]['ips'], true)) {
+                $accounts[$key]['ips'][] = $entry->ip;
+            }
+
+            $ipVal = ($entry->ip !== null && $entry->ip !== '') ? $entry->ip : '-';
+            if (! isset($ips[$ipVal])) {
+                $ips[$ipVal] = [
+                    'ip' => $ipVal,
+                    'count' => 0,
+                    'last_at' => $atIso,
+                    'last_ts' => $atTs,
+                    'who' => [],
+                ];
+            }
+            $ips[$ipVal]['count']++;
+            if ($atTs > $ips[$ipVal]['last_ts']) {
+                $ips[$ipVal]['last_ts'] = $atTs;
+                $ips[$ipVal]['last_at'] = $atIso;
+            }
+            $ips[$ipVal]['who'][$key] = true;
+        }
+
+        $sortMost = function (array $a, array $b): int {
+            if ($b['count'] !== $a['count']) {
+                return $b['count'] <=> $a['count'];
+            }
+
+            return strcmp($b['last_at'], $a['last_at']);
+        };
+
+        $byAccount = array_values(array_map(function (array $row) {
+            unset($row['last_ts']);
+
+            return $row;
+        }, $accounts));
+        usort($byAccount, $sortMost);
+
+        $byIp = array_values(array_map(function (array $row) {
+            $accountsCount = count($row['who']);
+            unset($row['last_ts'], $row['who']);
+            $row['accounts'] = $accountsCount;
+
+            return $row;
+        }, $ips));
+        usort($byIp, $sortMost);
+
+        $locked = LoginSecurity::query()
+            ->whereNotNull('locked_until')
+            ->where('locked_until', '>', $now)
+            ->orderBy('locked_until')
+            ->get()
+            ->map(fn (LoginSecurity $s) => [
+                'user_id' => (int) $s->user_id,
+                'locked_until' => BaghdadTime::iso($s->locked_until),
+                'failed' => (int) $s->failed_logins,
+            ])
+            ->values()
+            ->all();
+
+        $neverSignedIn = User::query()
+            ->where('active', true)
+            ->with('loginSecurity')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (User $u) => $u->loginSecurity?->last_login_at === null)
+            ->map(function (User $u) {
+                $row = ['user_id' => (int) $u->id];
+                $created = BaghdadTime::iso($u->created_at);
+                if ($created !== null) {
+                    $row['created_at'] = $created;
+                }
+
+                return $row;
+            })
+            ->values()
+            ->all();
+
+        return [
+            'days' => self::FAILED_DAYS,
+            'failed_total' => $failed->count(),
+            'by_account' => $byAccount,
+            'by_ip' => $byIp,
+            'locked' => $locked,
+            'never_signed_in' => $neverSignedIn,
+            'lock_after' => (int) $settings->lock_after,
+            'lock_minutes' => (int) $settings->lock_minutes,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function importUsers(User $actor, mixed $rawRows, bool $dryRun): array
+    {
+        $this->requireAdmin($actor);
+
+        if (! is_array($rawRows) || $rawRows === []) {
+            throw ApiException::validation('rows', 'api.admin.import_empty');
+        }
+        if (count($rawRows) > self::IMPORT_LIMIT) {
+            throw ApiException::validation('rows', 'api.admin.import_limit', ['max' => self::IMPORT_LIMIT]);
+        }
+
+        $existingEmails = User::query()->pluck('email')->map(fn ($e) => mb_strtolower((string) $e))->all();
+        $taken = array_fill_keys($existingEmails, true);
+        $teams = Team::query()->orderBy('id')->get();
+
+        $firstLine = [];
+        $checks = [];
+        $validRows = [];
+
+        foreach (array_values($rawRows) as $idx => $raw) {
+            $line = $idx + 1;
+            $row = is_array($raw) ? $raw : [];
+            $problems = [];
+
+            $name = trim((string) ($row['name'] ?? ''));
+            if ($name === '') {
+                $problems[] = ['field' => 'name', 'problem' => 'name_missing'];
+            } elseif (mb_strlen($name) > self::LIMITS['name']) {
+                $problems[] = ['field' => 'name', 'problem' => 'name_too_long'];
+            }
+
+            $email = mb_strtolower(trim((string) ($row['email'] ?? '')));
+            $validEmail = $email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
+            if ($email === '') {
+                $problems[] = ['field' => 'email', 'problem' => 'email_missing'];
+            } elseif (! $validEmail) {
+                $problems[] = ['field' => 'email', 'problem' => 'email_bad'];
+            } elseif (isset($firstLine[$email])) {
+                $problems[] = ['field' => 'email', 'problem' => 'email_twice', 'other_line' => $firstLine[$email]];
+            } elseif (isset($taken[$email])) {
+                $problems[] = ['field' => 'email', 'problem' => 'email_taken'];
+            }
+            if ($validEmail && ! isset($firstLine[$email])) {
+                $firstLine[$email] = $line;
+            }
+
+            $role = $this->roleFromText((string) ($row['role'] ?? ''));
+            if ($role === null) {
+                $problems[] = ['field' => 'role', 'problem' => 'role_unknown'];
+            } elseif (! in_array($role, self::IMPORT_ROLES, true)) {
+                $problems[] = ['field' => 'role', 'problem' => 'role_not_allowed'];
+            }
+
+            $title = trim((string) ($row['title'] ?? ''));
+            if (mb_strlen($title) > self::LIMITS['title']) {
+                $problems[] = ['field' => 'title', 'problem' => 'title_too_long'];
+            }
+
+            $teamText = trim((string) ($row['team'] ?? ''));
+            $matchedTeam = null;
+            if ($teamText !== '') {
+                $matchedTeam = $this->teamFromText($teamText, $teams);
+                if ($matchedTeam === null) {
+                    $problems[] = ['field' => 'team', 'problem' => 'team_unknown'];
+                }
+            }
+
+            $checks[$idx] = ['line' => $line, 'problems' => $problems];
+            if ($problems === []) {
+                $validRows[$idx] = [
+                    'name' => $name,
+                    'name_en' => trim((string) ($row['name_en'] ?? '')) ?: null,
+                    'email' => $email,
+                    'phone' => trim((string) ($row['phone'] ?? '')) ?: null,
+                    'role' => $role,
+                    'title' => $title,
+                    'team' => $matchedTeam,
+                ];
+            }
+        }
+
+        if ($dryRun) {
+            $skipped = count(array_filter($checks, fn ($c) => $c['problems'] !== []));
+
+            return [
+                'dry_run' => true,
+                'rows' => $checks,
+                'created' => 0,
+                'skipped' => $skipped,
+            ];
+        }
+
+        return DB::transaction(function () use ($actor, $checks, $validRows) {
+            $created = 0;
+
+            foreach ($validRows as $idx => $data) {
+                /** @var Team|null $team */
+                $team = $data['team'];
+                $user = User::create([
+                    'name' => $data['name'],
+                    'name_en' => $data['name_en'],
+                    'email' => $data['email'],
+                    'phone' => $data['phone'],
+                    'role' => $data['role'],
+                    'title' => $data['title'],
+                    'team_id' => $team?->id,
+                    'active' => true,
+                    'password' => Str::random(32),
+                ]);
+
+                LoginSecurity::create([
+                    'user_id' => $user->id,
+                    'failed_logins' => 0,
+                ]);
+
+                $checks[$idx]['user_id'] = (int) $user->id;
+                $created++;
+
+                $changes = [['field' => 'role', 'to' => $user->role]];
+                if ($team !== null) {
+                    $changes[] = ['field' => 'team', 'to' => $team->name];
+                }
+                $changes[] = ['field' => 'source', 'to' => 'import'];
+
+                $this->audit->log($actor->id, 'user_created', [
+                    'type' => 'user',
+                    'id' => $user->id,
+                    'label' => $user->name,
+                ], $changes);
+
+                if ($team !== null) {
+                    $this->notifications->notify([$user->id], 'team_joined', [
+                        'actor_id' => $actor->id,
+                        'data' => ['note' => $team->name],
+                    ]);
+                }
+            }
+
+            $skipped = count($checks) - $created;
+            $this->audit->log($actor->id, 'users_imported', [
+                'type' => 'import',
+                'label' => "{$created} / ".count($checks),
+            ], [
+                ['field' => 'created', 'to' => (string) $created],
+                ['field' => 'skipped', 'to' => (string) $skipped],
+            ]);
+
+            return [
+                'dry_run' => false,
+                'rows' => $checks,
+                'created' => $created,
+                'skipped' => $skipped,
+            ];
+        });
     }
 
     /**
@@ -654,6 +1133,181 @@ class AdminService
         }
     }
 
+    private function requireSessionsAdmin(User $actor): void
+    {
+        if (! $this->access->canManageSessions($actor)) {
+            throw ApiException::forbidden('api.admin.sessions_forbidden');
+        }
+    }
+
+    private function currentSessionId(User $actor): ?string
+    {
+        $token = $actor->currentAccessToken();
+
+        return ($token instanceof PersonalAccessToken && ! empty($token->session_id))
+            ? (string) $token->session_id
+            : null;
+    }
+
+    /**
+     * @param  Collection<int, AuthSession>  $list
+     */
+    private function endSessions(Collection $list, int $actorId, string $reason): void
+    {
+        if ($list->isEmpty()) {
+            return;
+        }
+
+        $now = now('UTC');
+        $sessionIds = [];
+        $tokenIds = [];
+
+        foreach ($list as $s) {
+            $s->forceFill([
+                'ended_at' => $now,
+                'ended_by' => $actorId,
+                'end_reason' => $reason,
+            ])->save();
+            $sessionIds[] = $s->id;
+            if ($s->token_id !== null) {
+                $tokenIds[] = (int) $s->token_id;
+            }
+        }
+
+        if ($tokenIds !== []) {
+            PersonalAccessToken::query()->whereIn('id', $tokenIds)->delete();
+        }
+        $this->push->deleteForSessions($sessionIds);
+
+        /** @var AuthSession $first */
+        $first = $list->first();
+        $person = User::query()->find($first->user_id);
+        $target = [
+            'type' => 'user',
+            'id' => (int) $first->user_id,
+            'label' => $person?->name ?? '-',
+        ];
+
+        if ($reason === 'admin') {
+            $changes = [
+                ['field' => 'session', 'to' => mb_substr($first->id, 0, 12)],
+                ['field' => 'device', 'to' => $this->describeDevice($first->user_agent)],
+            ];
+            if ($first->ip !== null && $first->ip !== '') {
+                $changes[] = ['field' => 'ip', 'to' => $first->ip];
+            }
+            $this->audit->log($actorId, 'session_ended', $target, $changes);
+        } elseif ($reason === 'everywhere') {
+            $this->audit->log($actorId, 'sessions_ended', $target, [
+                ['field' => 'sessions', 'to' => (string) $list->count()],
+            ]);
+        }
+    }
+
+    private function describeDevice(?string $ua): string
+    {
+        if ($ua === null || trim($ua) === '') {
+            return 'Unknown';
+        }
+        $browser = match (true) {
+            str_contains($ua, 'Edg/') => 'Edge',
+            str_contains($ua, 'OPR/') || str_contains($ua, 'Opera') => 'Opera',
+            str_contains($ua, 'Firefox/') => 'Firefox',
+            str_contains($ua, 'Chrome/') || str_contains($ua, 'CriOS/') => 'Chrome',
+            str_contains($ua, 'Safari/') => 'Safari',
+            default => 'Browser',
+        };
+        $os = match (true) {
+            str_contains($ua, 'Android') => 'Android',
+            str_contains($ua, 'iPhone') || str_contains($ua, 'iPad') => 'iOS',
+            str_contains($ua, 'Windows') => 'Windows',
+            str_contains($ua, 'Mac OS X') || str_contains($ua, 'Macintosh') => 'macOS',
+            str_contains($ua, 'Linux') => 'Linux',
+            default => 'Device',
+        };
+
+        return "{$os} · {$browser}";
+    }
+
+    private function estimateAuditBytes(int $auditCount): int
+    {
+        try {
+            if (DB::connection()->getDriverName() === 'mysql') {
+                $dbName = (string) config('database.connections.'.config('database.default').'.database');
+                $row = DB::selectOne(
+                    'SELECT (DATA_LENGTH + INDEX_LENGTH) AS bytes FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+                    [$dbName, 'audit_logs']
+                );
+                if ($row && isset($row->bytes)) {
+                    return (int) $row->bytes;
+                }
+            }
+        } catch (\Throwable) {
+            // Fall back to row estimate below.
+        }
+
+        return $auditCount * 512;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function readBackupState(): array
+    {
+        $path = trim((string) config('services.health.backup_status_path', ''));
+        if ($path !== '' && is_file($path) && is_readable($path)) {
+            $decoded = json_decode((string) file_get_contents($path), true);
+            if (is_array($decoded) && isset($decoded['status'])) {
+                return ApiResponse::clean([
+                    'at' => $decoded['at'] ?? null,
+                    'status' => in_array($decoded['status'], ['ok', 'failed', 'running', 'unknown'], true)
+                        ? $decoded['status']
+                        : 'unknown',
+                    'size_bytes' => isset($decoded['size_bytes']) ? (int) $decoded['size_bytes'] : null,
+                    'note' => isset($decoded['note']) ? (string) $decoded['note'] : null,
+                ]);
+            }
+        }
+
+        return [
+            'status' => 'unknown',
+            'note' => 'Managed by cPanel/hosting schedule.',
+        ];
+    }
+
+    private function roleFromText(string $text): ?string
+    {
+        $t = mb_strtolower(trim($text));
+        if ($t === '') {
+            return 'employee';
+        }
+        foreach (self::ROLE_WORDS as $key => $w) {
+            if ($t === $key || $t === mb_strtolower($w['ar']) || $t === mb_strtolower($w['en'])) {
+                return $key;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  Collection<int, Team>  $teams
+     */
+    private function teamFromText(string $text, Collection $teams): ?Team
+    {
+        $t = mb_strtolower(trim($text));
+        foreach ($teams as $team) {
+            if (mb_strtolower($team->name) === $t) {
+                return $team;
+            }
+            if ($team->name_en !== null && mb_strtolower($team->name_en) === $t) {
+                return $team;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * @param  array<string, mixed>  $input
      */
@@ -693,6 +1347,13 @@ class AdminService
         if (array_key_exists('team_id', $input) && $input['team_id'] !== null) {
             if (! Team::query()->where('id', (int) $input['team_id'])->exists()) {
                 throw ApiException::validation('team_id', 'api.admin.team_not_found');
+            }
+        }
+
+        if (array_key_exists('birth_date', $input) && $input['birth_date'] !== null && $input['birth_date'] !== '') {
+            $problem = Birthday::problem($input['birth_date'], BaghdadTime::today());
+            if ($problem !== null) {
+                throw ApiException::validation('birth_date', "api.admin.birth_date_{$problem}");
             }
         }
     }
