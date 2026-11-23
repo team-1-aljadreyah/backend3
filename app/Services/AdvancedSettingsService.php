@@ -16,7 +16,7 @@ class AdvancedSettingsService
 {
     public const HISTORY_KEPT = 300;
 
-    public const FEATURE_KEYS = ['chat', 'group_chats', 'bugs', 'reviews', 'announcements', 'requests', 'github', 'welcome'];
+    public const FEATURE_KEYS = ['chat', 'group_chats', 'voice_messages', 'bugs', 'reviews', 'announcements', 'requests', 'github', 'welcome'];
 
     public const PRIORITIES = ['high', 'medium', 'low'];
 
@@ -364,7 +364,13 @@ class AdvancedSettingsService
             'read_only' => $rules['read_only'],
             'roles' => $rules['roles'],
             'me' => $me,
+            'password_min' => (int) ($rules['security']['password_min'] ?? 8),
         ];
+    }
+
+    public function passwordMin(): int
+    {
+        return (int) ($this->currentRules()['security']['password_min'] ?? 8);
     }
 
     public function featureIsOn(string $featureKey): bool

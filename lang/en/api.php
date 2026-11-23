@@ -15,6 +15,15 @@ return [
         'password_required' => 'Enter your password.',
     ],
 
+    'password' => [
+        'required' => 'Enter a password.',
+        'too_short' => 'The password is too short: at least :min characters.',
+        'too_long' => 'The password is too long.',
+        'spaces_only' => 'The password can\'t be only spaces.',
+        'wrong_current' => 'The current password is wrong.',
+        'same_as_current' => 'Choose a password other than the current one.',
+    ],
+
     'projects' => [
         'not_found' => 'Project not found.',
         'create_forbidden' => 'You can\'t create projects.',

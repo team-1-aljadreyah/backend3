@@ -91,6 +91,7 @@ class AttachmentController extends Controller
                 'Content-Type' => $record->mime,
                 'X-Content-Type-Options' => 'nosniff',
                 'Accept-Ranges' => 'bytes',
+                'Cache-Control' => 'private, max-age=3600',
             ], true, $disposition);
 
             $response->prepare($request);

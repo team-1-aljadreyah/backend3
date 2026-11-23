@@ -17,6 +17,7 @@ use App\Models\User;
 use App\Support\ApiResponse;
 use App\Support\BaghdadTime;
 use App\Support\Birthday;
+use App\Support\PasswordRule;
 use App\Support\SearchNormalizer;
 use Carbon\CarbonInterface;
 use Illuminate\Http\Request;
@@ -139,9 +140,10 @@ class AdminService
             $input['role'] = $baseRole;
         }
         $this->checkUser($input, null, true);
+        $password = (string) ($input['password'] ?? '');
+        PasswordRule::checkOrFail($password, $this->advanced->passwordMin());
 
-        return DB::transaction(function () use ($actor, $input, $baseRole) {
-            $password = ! empty($input['password']) ? (string) $input['password'] : Str::random(32);
+        return DB::transaction(function () use ($actor, $input, $baseRole, $password) {
             $customRole = ($baseRole !== null && ! empty($input['custom_role'])) ? (string) $input['custom_role'] : null;
 
             $user = User::create([
@@ -205,6 +207,11 @@ class AdminService
             }
 
             $this->checkUser($patch, $id, false);
+            $newPassword = null;
+            if (array_key_exists('password', $patch) && $patch['password'] !== null) {
+                $newPassword = (string) $patch['password'];
+                PasswordRule::checkOrFail($newPassword, $this->advanced->passwordMin());
+            }
 
             $isSelf = (int) $user->id === (int) $actor->id;
             $nextCustomParam = array_key_exists('custom_role', $patch) ? ($patch['custom_role'] ?: null) : $user->custom_role;
@@ -307,6 +314,18 @@ class AdminService
                     $changes[] = ['field' => 'birth_date'];
                     $user->birth_date = $nextBirth;
                 }
+            }
+            if ($newPassword !== null) {
+                $user->password = $newPassword;
+                $changes[] = ['field' => 'password'];
+                // End active sessions (except caller's own if resetting self) so old tokens cannot be reused.
+                $currentId = $this->currentSessionId($actor);
+                $otherSessions = AuthSession::query()
+                    ->where('user_id', $user->id)
+                    ->whereNull('ended_at')
+                    ->when($currentId !== null, fn ($q) => $q->where('id', '!=', $currentId))
+                    ->get();
+                $this->endSessions($otherSessions, (int) $actor->id, 'everywhere');
             }
 
             if ($changes !== []) {
@@ -809,6 +828,7 @@ class AdminService
         $existingEmails = User::query()->pluck('email')->map(fn ($e) => mb_strtolower((string) $e))->all();
         $taken = array_fill_keys($existingEmails, true);
         $teams = Team::query()->orderBy('id')->get();
+        $passwordMin = $this->advanced->passwordMin();
 
         $firstLine = [];
         $checks = [];
@@ -862,6 +882,13 @@ class AdminService
                 }
             }
 
+            $rawPassword = (string) ($row['password'] ?? '');
+            if ($rawPassword === '') {
+                $problems[] = ['field' => 'password', 'problem' => 'password_missing'];
+            } elseif (PasswordRule::problem($rawPassword, $passwordMin) !== null) {
+                $problems[] = ['field' => 'password', 'problem' => 'password_short'];
+            }
+
             $checks[$idx] = ['line' => $line, 'problems' => $problems];
             if ($problems === []) {
                 $validRows[$idx] = [
@@ -872,6 +899,7 @@ class AdminService
                     'role' => $role,
                     'title' => $title,
                     'team' => $matchedTeam,
+                    'password' => $rawPassword,
                 ];
             }
         }
@@ -902,7 +930,7 @@ class AdminService
                     'title' => $data['title'],
                     'team_id' => $team?->id,
                     'active' => true,
-                    'password' => Str::random(32),
+                    'password' => $data['password'],
                 ]);
 
                 LoginSecurity::create([

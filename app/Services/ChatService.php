@@ -152,14 +152,28 @@ class ChatService
     /**
      * @return Collection<int, Message>
      */
-    public function messages(User $user, string $key): Collection
+    public function messages(User $user, string $key, ?int $before = null, ?int $limit = null): Collection
     {
         $this->membersForOrFail($user, $key);
 
-        $messages = Message::query()
-            ->where('chat_key', $key)
-            ->orderBy('id')
-            ->get();
+        $query = Message::query()->where('chat_key', $key);
+        if ($before !== null && $before > 0) {
+            $query->where('id', '<', $before);
+        }
+
+        if ($limit !== null) {
+            $clamped = max(1, min(100, $limit));
+            $messages = $query
+                ->orderByDesc('id')
+                ->limit($clamped)
+                ->get()
+                ->reverse()
+                ->values();
+        } else {
+            $messages = $query
+                ->orderBy('id')
+                ->get();
+        }
 
         return $this->hydrateFiles($messages);
     }

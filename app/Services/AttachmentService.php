@@ -93,10 +93,15 @@ class AttachmentService
         'application/x-dosexec',
     ];
 
+    private readonly AdvancedSettingsService $advanced;
+
     public function __construct(
         private readonly AccessService $access,
         private readonly ChatService $chat,
-    ) {}
+        ?AdvancedSettingsService $advanced = null,
+    ) {
+        $this->advanced = $advanced ?? app(AdvancedSettingsService::class);
+    }
 
     /**
      * @return Collection<int, Attachment>
@@ -339,6 +344,8 @@ class AttachmentService
         if ($ownerType !== 'message') {
             throw ApiException::validation('voice', 'api.attachments.voice_message_only');
         }
+
+        $this->advanced->requireFeature($user, 'voice_messages');
 
         if (! $file || ! $file->isValid()) {
             throw ApiException::validation('file', 'api.attachments.file_required');

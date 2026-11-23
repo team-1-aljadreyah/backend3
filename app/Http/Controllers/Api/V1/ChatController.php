@@ -15,14 +15,28 @@ class ChatController extends Controller
 
     public function conversations(Request $request): JsonResponse
     {
-        return ApiResponse::success($this->chat->conversations($request->user(), $request));
+        $payload = $this->chat->conversations($request->user(), $request);
+        $response = ApiResponse::success($payload);
+        $response->setEtag(sha1((int) $request->user()->id.'|'.json_encode($payload)));
+        $response->header('Cache-Control', 'private, no-cache');
+        $response->isNotModified($request);
+
+        return $response;
     }
 
     public function messages(Request $request, string $key): JsonResponse
     {
-        $list = $this->chat->messages($request->user(), $key);
+        $before = $request->query('before') !== null ? (int) $request->query('before') : null;
+        $limit = $request->query('limit') !== null ? (int) $request->query('limit') : null;
 
-        return ApiResponse::success(MessageResource::collection($list)->resolve($request));
+        $list = $this->chat->messages($request->user(), $key, $before, $limit);
+        $payload = MessageResource::collection($list)->resolve($request);
+        $response = ApiResponse::success($payload);
+        $response->setEtag(sha1((int) $request->user()->id.'|'.$key.'|'.($before ?? '').'|'.($limit ?? '').'|'.json_encode($payload)));
+        $response->header('Cache-Control', 'private, no-cache');
+        $response->isNotModified($request);
+
+        return $response;
     }
 
     public function send(Request $request, string $key): JsonResponse

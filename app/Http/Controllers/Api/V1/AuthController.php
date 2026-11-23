@@ -39,6 +39,17 @@ class AuthController extends Controller
         return ApiResponse::success(null);
     }
 
+    public function changePassword(Request $request): JsonResponse
+    {
+        $this->auth->changeMyPassword(
+            $request->user(),
+            (string) $request->input('current_password', ''),
+            (string) $request->input('password', '')
+        );
+
+        return ApiResponse::success(null);
+    }
+
     public function users(Request $request): JsonResponse
     {
         $users = User::query()->orderBy('id')->get();
